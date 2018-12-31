@@ -13,7 +13,8 @@ Features:
 
 
 Requirements:  
-PanoramaControl software (which can also be found in my Github repository)
 
-Arduino Lib for AMS AS5048B I2C - 14-bit magnetic rotary position sensor 
+-PanoramaControl software (which can also be found in my Github repository)
+
+-Arduino Lib for AMS AS5048B I2C - 14-bit magnetic rotary position sensor 
 https://github.com/sosandroid/AMS_AS5048B   (under the BSD license)
