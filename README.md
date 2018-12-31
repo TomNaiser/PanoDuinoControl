@@ -7,7 +7,7 @@ Features:
 
 -PID closed loop position control of  modified RC-Servos (operated via external H-Bridge)
 
--high positional accuracy by using 14-bit position encoder data
+-high positional accuracy by using 14-bit rotary encoder data
 
 -remote triggering of camera shutters 
 
