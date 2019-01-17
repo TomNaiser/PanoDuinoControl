@@ -25,4 +25,4 @@ https://github.com/sosandroid/AMS_AS5048B   (under the BSD license)
 
 
 
-Search tags: arduino gigapixel panorama pan tilt motorized head controller software PID servo control encoder
+Search tags: arduino gigapixel panorama pan tilt motorized head controller software PID servo encoder
