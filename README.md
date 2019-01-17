@@ -18,3 +18,11 @@ Requirements:
 
 -Arduino Lib for AMS AS5048B I2C - 14-bit magnetic rotary position sensor 
 https://github.com/sosandroid/AMS_AS5048B   (under the BSD license)
+
+
+
+
+
+
+
+Search tags: arduino gigapixel panorama pan tilt motorized head controller software PID servo control encoder
