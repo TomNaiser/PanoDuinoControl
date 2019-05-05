@@ -4,6 +4,7 @@
   PanoDuinoControl V01052019
   Author: Thomas Naiser
 
+  05.05.19 Optional Debug Mode (with Arduino Mega) & Normal Mode (with Arduino Nano) - Mega has several Hardware Serial ports, while the Nano has just one (Serial)
   01.05.19 Changes for new Arduino Nano based electronics board (pins have been changed!)
 
   31.12.18 Big Cleanup. Removed LSM303 acceleration sensor from project
@@ -33,6 +34,10 @@
 #include <Wire.h>
 #include <math.h>
 
+//Debugging with Arduino Mega, with a USB-Serial-Port for Debugging: in Debug Mode you need to replace the Arduino Nano and connect an Arduino Mega with jumper wires
+//#define DEBUG //Debug mode with Arduino Mega - comment out for Normal Mode with Arduino Nano: Debug Mode uses Serial of Mega for USB-Com and Serial2 for wireless com, Normal mode uses Serial for wireless communication
+
+
 #define AvNum 30
 
 #define NumAv 2  //Number of values for averaging - rotary encoders
@@ -42,10 +47,15 @@
 #define PanSensorADDRESS 65  //0x41
 #define TiltSensorADDRESS 64 //0x40
 
-#define HardwareConfigMega 0
-#define HardwareConfigNano 1
+#define HardwareConfigMega 0 //Debug mode with Arduino Mega
+#define HardwareConfigNano 1 //Normal mode with Arduino Nano
+
+
 
 //global variables
+
+int HardwareConfig=HardwareConfigMega; //Set the Configuration: Debug mode (Mega) or Normal Mode (Nano)
+
 boolean SendDebugData = true; //True: Send Debug Data (CSV params) to serial (plot  with Kst etc.): False: send no debug data
 unsigned long timelast; //abs time at which the previous command was received
 unsigned long time;
@@ -174,7 +184,12 @@ double DY = 0;
   }
 */
 
-
+#ifdef DEBUG //Debug mode with Arduino Mega (and multiple Hardware Serial Ports)
+HardwareSerial & USB_Debug_Serial = Serial;
+HardwareSerial & Wireless_Serial = Serial2;
+#else //Normal mode with Arduino Nano (and only one Hardware Serial Port)
+HardwareSerial & Wireless_Serial = Serial;
+#endif
 
 AMS_AS5048B mysensor_x(65);
 AMS_AS5048B mysensor_y(64);
@@ -185,15 +200,21 @@ void setup() {
   FW_status = 0;
   loopcount = 0;
   // initialize both serial ports:
-  Serial.begin(115200);   //Arduino USB-Serial
-  Serial2.begin(115200);  //Bluetooth module
+  #ifdef DEBUG
+  USB_Debug_Serial.begin(115200);   //Arduino USB-Serial
+  #endif
+  Wireless_Serial.begin(115200);  //Bluetooth module
 
+  #ifdef DEBUG
+  if (!USB_Debug_Serial) FW_status = FW_status | 0x01; //no usb
+  #endif
+  
+  if (!Wireless_Serial) FW_status = FW_status | 0x04; // no bluetooth
 
-  if (!Serial) FW_status = FW_status | 0x01; //no usb
-  if (!Serial2) FW_status = FW_status | 0x04; // no bluetooth
-
-  Serial.println("PanoDuinoControlV01052019");
-  Serial.println("by Thomas Naiser 2019");
+  #ifdef DEBUG
+  USB_Debug_Serial.println("PanoDuinoControlV01052019");
+  USB_Debug_Serial.println("by Thomas Naiser 2019");
+  #endif
 
   pinMode(led, OUTPUT);  //used as an indicator for movement
   j = 0;                 // acceleration-buffer-pointer =0;
@@ -220,7 +241,7 @@ void setup() {
 
   count = 0;
   //Start serial
-  //Serial.begin(115200);
+  //USB_Debug_Serial.begin(115200);
   //while (!Serial) ; //wait until Serial ready
 
 
@@ -423,14 +444,18 @@ double mse_y()
 void SetZeroPos_x()
 {
   mysensor_x.setZeroReg();
-  Serial.println("SetZeroReg x");
+  #ifdef DEBUG
+  USB_Debug_Serial.println("SetZeroReg x");
+  #endif
 }
 
 //Set  the  zero degree point (tilt-Axis) at the current Position
 void SetZeroPos_y()
 {
   mysensor_y.setZeroReg();
-  Serial.println("SetZeroReg y");
+  #ifdef DEBUG
+  USB_Debug_Serial.println("SetZeroReg y");
+  #endif
 }
 
 //Check if the target-position has been reached
@@ -508,9 +533,9 @@ float GetFloatFromSerial()
 
   while (ByteCount < 4) //Read the next 4 Bytes
   {
-    if (Serial2.available())
+    if (Wireless_Serial.available())
     {
-      inByte = Serial2.read(); //read byte from bluetooth
+      inByte = Wireless_Serial.read(); //read byte from bluetooth
       floatBuf[ByteCount] = inByte;
       ByteCount++;
     }
@@ -535,36 +560,39 @@ void SendDebugVals()
   //float TiltAngle;
   //float AcMean;
   //float AcVar
+  #ifdef DEBUG
   if (SendDebugData)
   {
     /*
-      Serial.print(millis(), DEC);
-      Serial.write(';');
+      USB_Debug_Serial.print(millis(), DEC);
+      USB_Debug_Serial.write(';');
 
-      Serial.print(PanAngle, DEC);
-      Serial.write(';');
+      USB_Debug_Serial.print(PanAngle, DEC);
+      USB_Debug_Serial.write(';');
 
-      Serial.print(TiltAngle, DEC);
-      Serial.write(';');
+      USB_Debug_Serial.print(TiltAngle, DEC);
+      USB_Debug_Serial.write(';');
 
-      Serial.print(AcMean, DEC);
-      Serial.write(';');
+      USB_Debug_Serial.print(AcMean, DEC);
+      USB_Debug_Serial.write(';');
 
-      Serial.print(AcVar, DEC);
-      Serial.write(';');
+      USB_Debug_Serial.print(AcVar, DEC);
+      USB_Debug_Serial.write(';');
 
-      Serial.println(shutter, DEC);*/
+      USB_Debug_Serial.println(shutter, DEC);*/
   }
-
+  #endif
 }
 
 
 //ToDo: Überarbeiten
 int checkstatus()
 {
-  if (!Serial) FW_status = FW_status | 0x01; //no usb
+  #ifdef DEBUG
+  if (!USB_Debug_Serial) FW_status = FW_status | 0x01; //no usb
+  #endif
 
-  if (!Serial2) FW_status = FW_status | 0x04; // no bluetooth
+  if (!Wireless_Serial) FW_status = FW_status | 0x04; // no bluetooth
 
   return FW_status;
 }
@@ -584,7 +612,7 @@ void loop() {
   {
     //Parse and direct commands
     // read from from Bluetooth send to Arduino->PC and pololu
-    if (Serial2.available())
+    if (Wireless_Serial.available())
     {
       //if the time between subsequent bytes is larger than 5 ms than  the NewCmdFlag is set true!
       time = millis();
@@ -595,16 +623,15 @@ void loop() {
         newCmdFlag = true;
       }
 
-      int inByte = Serial2.read();
+      int inByte = Wireless_Serial.read();
       if ((newCmdFlag == true) && (!(inByte == 0x80))) //if there is a new Command Sequence (the last byte came in long ago...)  which doesnt start with 0x80
       {
         //Important: In each case a certain time delay is necessary (200 ms works, but less might be ok too)
         //Then it could be the trigger
-        Serial.print("New inByte: ");
-        Serial.println(inByte);
+
         if (inByte == 0xFF) //This is the signal for the camera trigger
         {
-          //Serial.println("0xFF");
+          //USB_Debug_Serial.println("0xFF");
           shutter = 1;
           SendDebugVals();
 
@@ -616,7 +643,9 @@ void loop() {
           delay(40);
 
           CamReadyForNewImage = false;
-          Serial.print("0");
+          #ifdef DEBUG
+          USB_Debug_Serial.print("0");
+          #endif
           digitalWrite(shutterPin, LOW);
           digitalWrite(shutterPinLumix2, LOW);
           digitalWrite(shutterPinLumix1, LOW);
@@ -629,7 +658,9 @@ void loop() {
           delay(200);
           digitalWrite(shutterPin, LOW);
           shutter = 0;
-          Serial.println("Shutter was activated");
+          #ifdef DEBUG
+          USB_Debug_Serial.println("Shutter was activated");
+          #endif
           SendDebugVals();
         }
 
@@ -653,42 +684,53 @@ void loop() {
         //Get the Pan-Angle  from the AS5048B rotary encoder (via I2C) and send result (angle in degree- float value) to the bluetooth interface
         if (inByte == 0xFD) //Command Byte
         {
-          Serial2.print("1 ");
-          Serial2.println (AbsPos_x);
+          Wireless_Serial.print("1 ");
+          Wireless_Serial.println (AbsPos_x);
         }
 
         if (inByte == 0xFC) //request Pitch (tilt) angle
         {
-          Serial2.print("2 ");
-          Serial2.println (AbsPos_y);
+          Wireless_Serial.print("2 ");
+          Wireless_Serial.println (AbsPos_y);
         }
 
         //Version request
         if (inByte == 0xFA)
         {
           checkstatus();
-          Serial.println("PanoDuinoControlV181231");
+          #ifdef DEBUG
+          USB_Debug_Serial.println("PanoDuinoControlV181231");
+          #endif
         }
 
         if (inByte == 0xFB)
         {
           checkstatus();
-          Serial2.println(FW_status, DEC);
+          Wireless_Serial.println(FW_status, DEC);
         }
 
 
         //MoveServo Pan-Axis (x)
         if (inByte == 0xF8)
         {
-          Serial.print("Waiting for position data: ");          
+          #ifdef DEBUG
+          USB_Debug_Serial.print("Waiting for position data: ");     
+          #endif
+               
           TargetPos_x = GetFloatFromSerial();
-          Serial.print("Move Pan Servo to: ");
-          Serial.println(TargetPos_x);
+
+          #ifdef DEBUG
+          USB_Debug_Serial.print("Move Pan Servo to: ");
+          USB_Debug_Serial.println(TargetPos_x);
+          #endif
+          
           ResetMovement_x();
           if (TargetPos_x > 360 || TargetPos_x < -360)
           {
-            Serial.println("OutOfRange");
-            Serial.println((long)TargetPos_x);
+            #ifdef DEBUG
+            USB_Debug_Serial.println("OutOfRange");
+            USB_Debug_Serial.println((long)TargetPos_x);
+            #endif
           }
         }
 
@@ -696,16 +738,24 @@ void loop() {
         //MoveServo Tilt-Axis (y)
         if (inByte == 0xF9)
         {        
-          Serial.print("Waiting for position data: ");      
+          #ifdef DEBUG
+          USB_Debug_Serial.print("Waiting for position data: ");  
+          #endif
+              
           TargetPos_y = GetFloatFromSerial();
-          Serial.print("Move Tilt Servo to: ");
-          Serial.println(TargetPos_y);
+
+          #ifdef DEBUG
+          USB_Debug_Serial.print("Move Tilt Servo to: ");
+          USB_Debug_Serial.println(TargetPos_y);
+          #endif
           
           ResetMovement_y();
           if (TargetPos_y > 360 || TargetPos_y < -360)
           {
-            Serial.println("OutOfRange");
-            Serial.println((long)TargetPos_y);
+            #ifdef DEBUG
+            USB_Debug_Serial.println("OutOfRange");
+            USB_Debug_Serial.println((long)TargetPos_y);
+            #endif
           }
         }
 
@@ -724,15 +774,15 @@ void loop() {
         //Is the  x-Axis still moving, mse_x() tells us...
         if (inByte == 0xF5)
         {
-          Serial2.print("3 ");
-          Serial2.println(mse_x(), DEC);
+          Wireless_Serial.print("3 ");
+          Wireless_Serial.println(mse_x(), DEC);
         }
 
         //Is the  y-Axis still moving, mse_y() tells us...
         if (inByte == 0xF6)
         {
-          Serial2.print("4 ");
-          Serial2.println(mse_y(), DEC);
+          Wireless_Serial.print("4 ");
+          Wireless_Serial.println(mse_y(), DEC);
         }
 
         //Is the  x-Axis has reached its target position return true, else false
@@ -741,8 +791,8 @@ void loop() {
           int targetReached = 0;
           if (CheckTargetReached_x() == true) targetReached = 1;
           else targetReached = 0;
-          Serial2.print("5 ");
-          Serial2.println(targetReached);
+          Wireless_Serial.print("5 ");
+          Wireless_Serial.println(targetReached);
         }
 
         //Is the  y-Axis has reached its target position return true, else false
@@ -751,8 +801,8 @@ void loop() {
           int targetReached = 0;
           if (CheckTargetReached_y() == true) targetReached = 1;
           else targetReached = 0;
-          Serial2.print("6 ");
-          Serial2.println(targetReached);
+          Wireless_Serial.print("6 ");
+          Wireless_Serial.println(targetReached);
         }
 
         //GetShutDownThreshold x axis (jitter level below which the position is considered as constant => shut down H-bridge output)
@@ -773,8 +823,10 @@ void loop() {
           SpeedX = GetFloatFromSerial();
           if (SpeedX < 0.0 || SpeedX > 1.0)
           {
-            Serial.println("OutOfRange");
-            Serial.println(SpeedX);
+            #ifdef DEBUG
+            USB_Debug_Serial.println("OutOfRange");
+            USB_Debug_Serial.println(SpeedX);
+            #endif
           }
         }
 
@@ -784,47 +836,55 @@ void loop() {
           SpeedY = GetFloatFromSerial();
           if (SpeedY < 0.0 || SpeedY > 1.0)
           {
-            Serial.println("OutOfRange");
-            Serial.println(SpeedY);
+            #ifdef DEBUG
+            USB_Debug_Serial.println("OutOfRange");
+            USB_Debug_Serial.println(SpeedY);
+            #endif
           }
         }
 
         //Request if the last exposure has taken place, return 0  if this is not the case - otherwise return  1
         if (inByte == 0xF0)
         {
-          Serial2.print("9 ");
-          //Serial.println("Cam status rqst");
-          //Serial.println("8 ");
+          Wireless_Serial.print("9 ");
+          //USB_Debug_Serial.println("Cam status rqst");
+          //USB_Debug_Serial.println("8 ");
           if (CamReadyForNewImage == false)
           {
-            Serial2.println(0);
-            Serial.print("CRFNI=");
-            Serial.println("0");
+            Wireless_Serial.println(0);
+            #ifdef DEBUG
+            USB_Debug_Serial.print("CRFNI=");
+            USB_Debug_Serial.println("0");
+            #endif
           }
           if (CamReadyForNewImage == true)
           {
-            Serial2.println(1);
-            Serial.print("CRFNI=");
-            Serial.println("1");
+            Wireless_Serial.println(1);
+            #ifdef DEBUG
+            USB_Debug_Serial.print("CRFNI=");
+            USB_Debug_Serial.println("1");
+            #endif
           }
         }
 
         //Reset camera ready status from PC
         if (inByte == 0xEF)
         {
-          // Serial2.print("9 ");
-          // Serial.println("Reset Cam rdy status");
-          // Serial.println("9 ");
+          // Wireless_Serial.print("9 ");
+          // USB_Debug_Serial.println("Reset Cam rdy status");
+          // USB_Debug_Serial.println("9 ");
           //After a camera shutter feedback has been detected:
 
           CamFlashState = HIGH;
-          /*    Serial.println(" ");
-              Serial.println("inByte=0xEF");
-              Serial.println("CFlashSt=High");*/
+          /*    USB_Debug_Serial.println(" ");
+              USB_Debug_Serial.println("inByte=0xEF");
+              USB_Debug_Serial.println("CFlashSt=High");*/
 
 
           CamReadyForNewImage = true;
-          Serial.println("CamReset - ready for new image");
+          #ifdef DEBUG
+          USB_Debug_Serial.println("CamReset - ready for new image");
+          #endif
 
         }
       }
@@ -836,13 +896,13 @@ void loop() {
   //Send status in every 10th loop
   if (loopcount % 10 == 0)
   {
-    if (Serial2.available())
+    if (Wireless_Serial.available())
     {
       //Send Status
       CheckTargetReached_x();
       CheckTargetReached_y();
-      Serial2.print("7 ");
-      Serial2.println(FW_status);
+      Wireless_Serial.print("7 ");
+      Wireless_Serial.println(FW_status);
     }
   }
 
@@ -913,9 +973,9 @@ void loop() {
   //Send PID output to H-Bridge
   analogWrite(pwm_y, PIDOut_y);
 
-  /* Serial.print(mseVal_x);
-    Serial.print(',');
-    Serial.println(mseVal_y); */
+  /* USB_Debug_Serial.print(mseVal_x);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.println(mseVal_y); */
 
   int tarReached_x;
   int tarReached_y;
@@ -937,57 +997,60 @@ void loop() {
   }
 
   /*
-    Serial.print(tarReached_x);
-    Serial.print(',');
-    Serial.print(tarReached_y);
-    Serial.print(',');
+    USB_Debug_Serial.print(tarReached_x);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(tarReached_y);
+    USB_Debug_Serial.print(',');
 
-    Serial.print(TargetPos_x);
-    Serial.print(',');
-    Serial.print(TargetPos_y);
-    Serial.print(',');
+    USB_Debug_Serial.print(TargetPos_x);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(TargetPos_y);
+    USB_Debug_Serial.print(',');
 
-    Serial.print(ActualPosition_x);
-    Serial.print(',');
-    Serial.print(ActualPosition_y);
-    Serial.print(',');
+    USB_Debug_Serial.print(ActualPosition_x);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(ActualPosition_y);
+    USB_Debug_Serial.print(',');
 
-    Serial.print(AbsPos_x);
-    Serial.print(',');
-    Serial.print(AbsPos_y);
+    USB_Debug_Serial.print(AbsPos_x);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(AbsPos_y);
 
 
-    Serial.print(',');
-    Serial.print(FW_status);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(FW_status);
 
-    Serial.print(',');
-    Serial.print(PIDOut_x);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(PIDOut_x);
   */
-  //Serial.print(',');
-  Serial.print(Error_x[0]);
+  //USB_Debug_Serial.print(',');
 
-  Serial.print(',');
-  Serial.print(Error_y[0]);
+  #ifdef DEBUG
+  USB_Debug_Serial.print(Error_x[0]);
 
-  Serial.print(',');
-  Serial.print(mse_x());
+  USB_Debug_Serial.print(',');
+  USB_Debug_Serial.print(Error_y[0]);
 
-  Serial.print(',');
-  Serial.println(mse_y());
+  USB_Debug_Serial.print(',');
+  USB_Debug_Serial.print(mse_x());
+
+  USB_Debug_Serial.print(',');
+  USB_Debug_Serial.println(mse_y());
+  #endif
 
   /*
-    Serial.print(',');
-    Serial.print(PIDOut_y);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(PIDOut_y);
 
 
-    Serial.print(',');
-    Serial.print(PY);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(PY);
 
-    Serial.print(',');
-    Serial.print(IY);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.print(IY);
 
-    Serial.print(',');
-    Serial.println(DY);
+    USB_Debug_Serial.print(',');
+    USB_Debug_Serial.println(DY);
   */
   count = count + 1;
 }
