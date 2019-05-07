@@ -1,7 +1,7 @@
 
-
+ 
 /*
-  PanoDuinoControl V01052019
+  PanoDuinoControl V05052019
   Author: Thomas Naiser
 
   05.05.19 Optional Debug Mode (with Arduino Mega) & Normal Mode (with Arduino Nano) - Mega has several Hardware Serial ports, while the Nano has just one (Serial)
@@ -36,7 +36,7 @@
 
 //Debugging with Arduino Mega, with a USB-Serial-Port for Debugging: in Debug Mode you need to replace the Arduino Nano and connect an Arduino Mega with jumper wires
 //#define DEBUG //Debug mode with Arduino Mega - comment out for Normal Mode with Arduino Nano: Debug Mode uses Serial of Mega for USB-Com and Serial2 for wireless com, Normal mode uses Serial for wireless communication
-
+//Requirements: Set Board to Mega or Nano,respectively
 
 #define AvNum 30
 
@@ -62,10 +62,10 @@ unsigned long time;
 unsigned long timedif;  //time differenc between current command call and previous command call
 boolean newCmdFlag;     //This flag indicates that the startByte of a new Command string is received after a long pause
 int shutterPin =  28;      // the number of the digital Pin for triggering the Canon Camera via CHDK
-int shutterPinLumix1 = 51; // Pin number for remote shutter pin 1 (Focus) of the LUMIX camera
-int shutterPinLumix2 = 53; // Pin number for remote shutter pin 2 (release) of the LUMIX camera
-int shutterPinSony = 24; //remoteShutter Pin Sony A7
-int focusPinSony = 26; //remoteFocus Pin Sony A7
+int shutterPinLumix1 = 7; // Pin number for remote shutter pin 1 (Focus) of the LUMIX camera
+int shutterPinLumix2 = 8; // Pin number for remote shutter pin 2 (release) of the LUMIX camera
+int shutterPinSony = 5; //remoteShutter Pin Sony A7
+int focusPinSony = 6; //remoteFocus Pin Sony A7
 
 int shutter = 0; //shutter indicator - for debug purposes
 
@@ -201,9 +201,9 @@ void setup() {
   loopcount = 0;
   // initialize both serial ports:
   #ifdef DEBUG
-  USB_Debug_Serial.begin(115200);   //Arduino USB-Serial
+  USB_Debug_Serial.begin(57600);   //Arduino USB-Serial
   #endif
-  Wireless_Serial.begin(115200);  //Bluetooth module
+  Wireless_Serial.begin(57600);  //Bluetooth module
 
   #ifdef DEBUG
   if (!USB_Debug_Serial) FW_status = FW_status | 0x01; //no usb
@@ -212,7 +212,7 @@ void setup() {
   if (!Wireless_Serial) FW_status = FW_status | 0x04; // no bluetooth
 
   #ifdef DEBUG
-  USB_Debug_Serial.println("PanoDuinoControlV01052019");
+  USB_Debug_Serial.println("PanoDuinoControlV05052019");
   USB_Debug_Serial.println("by Thomas Naiser 2019");
   #endif
 
@@ -241,7 +241,7 @@ void setup() {
 
   count = 0;
   //Start serial
-  //USB_Debug_Serial.begin(115200);
+  //USB_Debug_Serial.begin(57600);
   //while (!Serial) ; //wait until Serial ready
 
 
@@ -256,8 +256,8 @@ void setup() {
   mysensor_y.setClockWise(true);
 
   //mysensor_y.zeroRegW(-1200); //Zero Offset
-  mysensor_y.zeroRegW(-1700); //Zero Offset  - set encoder position to zero when the tilt axis is in horizontal position
-
+  //mysensor_y.zeroRegW(-1700); //Zero Offset  - set encoder position to zero when the tilt axis is in horizontal position
+  mysensor_y.zeroRegW(2396);
 
   TotalOffset_x = 0;
   TotalOffset_y = 0;
@@ -274,6 +274,11 @@ void setup() {
   //At setup time motors aren't moving
   analogWrite(pwm_x, 0);
   analogWrite(pwm_y, 0);
+
+  digitalWrite(dir_x, HIGH);
+  digitalWrite(dir_x_neg, LOW);
+  digitalWrite(dir_y, HIGH);
+  digitalWrite(dir_y_neg, LOW);
 
   TotalOffset_x = 0;
   TotalOffset_y = 0;
@@ -635,7 +640,7 @@ void loop() {
           shutter = 1;
           SendDebugVals();
 
-          digitalWrite(shutterPin, HIGH);
+          //digitalWrite(shutterPin, HIGH);
           digitalWrite(shutterPinLumix1, HIGH);
           digitalWrite(shutterPinLumix2, HIGH);
           digitalWrite(focusPinSony, HIGH);
@@ -646,7 +651,7 @@ void loop() {
           #ifdef DEBUG
           USB_Debug_Serial.print("0");
           #endif
-          digitalWrite(shutterPin, LOW);
+          //digitalWrite(shutterPin, LOW);
           digitalWrite(shutterPinLumix2, LOW);
           digitalWrite(shutterPinLumix1, LOW);
           delay(80);
@@ -654,9 +659,9 @@ void loop() {
           digitalWrite(shutterPinSony, LOW);
           digitalWrite(focusPinSony, LOW);
 
-          digitalWrite(shutterPin, HIGH);
+          //digitalWrite(shutterPin, HIGH);
           delay(200);
-          digitalWrite(shutterPin, LOW);
+          //digitalWrite(shutterPin, LOW);
           shutter = 0;
           #ifdef DEBUG
           USB_Debug_Serial.println("Shutter was activated");
@@ -896,14 +901,14 @@ void loop() {
   //Send status in every 10th loop
   if (loopcount % 10 == 0)
   {
-    if (Wireless_Serial.available())
-    {
+    //if (Wireless_Serial.available())
+    //{
       //Send Status
       CheckTargetReached_x();
       CheckTargetReached_y();
       Wireless_Serial.print("7 ");
       Wireless_Serial.println(FW_status);
-    }
+    //}
   }
 
   double mseVal_x;
