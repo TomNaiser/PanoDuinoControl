@@ -645,7 +645,7 @@ void loop() {
           digitalWrite(shutterPinLumix2, HIGH);
           digitalWrite(focusPinSony, HIGH);
           digitalWrite(shutterPinSony, HIGH);
-          delay(40);
+          delay(30);
 
           CamReadyForNewImage = false;
           #ifdef DEBUG
@@ -654,13 +654,12 @@ void loop() {
           //digitalWrite(shutterPin, LOW);
           digitalWrite(shutterPinLumix2, LOW);
           digitalWrite(shutterPinLumix1, LOW);
-          delay(80);
 
           digitalWrite(shutterPinSony, LOW);
           digitalWrite(focusPinSony, LOW);
 
           //digitalWrite(shutterPin, HIGH);
-          delay(200);
+          //delay(200);
           //digitalWrite(shutterPin, LOW);
           shutter = 0;
           #ifdef DEBUG
