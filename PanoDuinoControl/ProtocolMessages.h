@@ -1,0 +1,36 @@
+#ifndef PROTOCOL_MESSAGES_H
+#define PROTOCOL_MESSAGES_H
+
+enum RunStateV2
+{
+  RUN_IDLE,
+  RUN_PLAN_READY,
+  RUN_RUNNING,
+  RUN_PAUSE_PENDING,
+  RUN_PAUSED,
+  RUN_STOPPED,
+  RUN_COMPLETED,
+  RUN_FAULT
+};
+
+enum RunPhaseV2
+{
+  PHASE_NONE,
+  PHASE_SELECT_TARGET,
+  PHASE_MOVING,
+  PHASE_SETTLING,
+  PHASE_TRIGGER_ACTIVE,
+  PHASE_EXPOSURE_WAIT,
+  PHASE_COMMIT_IMAGE
+};
+
+enum DisconnectPolicyV2
+{
+  DISCONNECT_CONTINUE = 0,
+  DISCONNECT_ESTOP_ON_TIMEOUT = 1
+};
+
+const char *runStateName(RunStateV2 state);
+const char *runPhaseName(RunPhaseV2 phase);
+
+#endif

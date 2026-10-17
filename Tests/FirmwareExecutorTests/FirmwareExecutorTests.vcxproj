@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C4FD9A8D-26B7-4E97-9827-14CB3C06AE20}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>FirmwareExecutorTests</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>SAFETY_LIMITS_CONFIRMED=1;PANODUINO_HOST_TEST=1;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>FakeArduino;..\..\PanoDuinoControl;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp14</LanguageStandard>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="Main.cpp" />
+    <ClCompile Include="MotionTests.cpp" />
+    <ClCompile Include="MotionConfigTests.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\MotionSettings.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\MotionConfigStore.cpp" />
+    <ClCompile Include="FakeArduino\Arduino.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\PanoDuinoControl.ino">
+      <CompileAs>CompileAsCpp</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\PanoDuinoControl\PanoramaExecutor.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\PanoramaPlanV2.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\ProtocolMessages.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\ProtocolV2.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\SafetyController.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\V2Controller.cpp" />
+    <ClCompile Include="..\..\PanoDuinoControl\MotionController.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
