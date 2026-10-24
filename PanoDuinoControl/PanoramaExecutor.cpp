@@ -3,7 +3,7 @@
 
 PanoramaExecutor::PanoramaExecutor(IPanoramaHardware &hardware, SafetyController &safety, IExecutorEvents &events)
   : _hardware(hardware), _safety(safety), _events(events), _state(RUN_IDLE), _phase(PHASE_NONE),
-    _phaseStartedMs(0), _movementStartedMs(0), _incrementalMoveBudgetMs(0), _stepTimedOut(false), _passiveSettling(false), _capturePanMdeg(0), _captureTiltMdeg(0), _nextImageIndex(0), _captureCount(0), _planRevision(0),
+    _phaseStartedMs(0), _movementStartedMs(0), _incrementalMoveBudgetMs(0), _stepTimedOut(false), _passiveSettling(false), _passiveWaitStartedMs(0), _captureReady(false), _capturePanMdeg(0), _captureTiltMdeg(0), _nextImageIndex(0), _retriedImageIndex(UINT32_MAX), _captureCount(0), _planRevision(0),
     _segmentCount(0), _pauseRequested(false), _pendingRewindColumns(0),
     _pendingForwardColumns(0), _lastNavigationForward(false),
     _pendingSettleMs(0), _pendingTriggerMs(0), _pendingExposureMs(0),
@@ -20,6 +20,7 @@ const char *PanoramaExecutor::loadPlan(const PanoramaPlanV2 &plan)
   if (strcmp(validation, "OK") != 0) return validation;
   _plan = plan;
   _nextImageIndex = 0;
+  _retriedImageIndex = UINT32_MAX;
   _captureCount = 0;
   _planRevision = 0;
   _segmentCount = 1;
@@ -108,6 +109,20 @@ const char *PanoramaExecutor::forwardColumns(uint32_t runId, uint16_t columns)
   }
   _pendingForwardColumns = (uint16_t)requested;
   return "FORWARD_PENDING";
+}
+
+const char *PanoramaExecutor::retryColumn(uint32_t runId,uint16_t previous)
+{
+  if(_plan.runId!=runId) return "RUN_ID_MISMATCH";
+  if(_state!=RUN_PAUSED) return "INVALID_STATE";
+  if(_plan.moveMode!=0) return "UNSUPPORTED_MODE";
+  if(previous>1 || _nextImageIndex>=_plan.totalImages()) return "VALUE_OUT_OF_RANGE";
+  // An empty segment can be reused: repeated failed starts consume no slots.
+  if(_segments[_segmentCount-1].captureCount==0) --_segmentCount;
+  else if(_segmentCount>=MAX_RUN_SEGMENTS_V2) return "SEGMENT_LIMIT";
+  applyRewindColumns(previous);
+  strcpy(_lastError,"NONE");
+  return "COLUMN_RETRY_READY"; // Deliberately does not resume or enable motors.
 }
 
 void PanoramaExecutor::applyForwardColumns(uint16_t columns)
@@ -222,8 +237,42 @@ bool PanoramaExecutor::stopMissedTarget(const char *reason,uint32_t nowMs)
      !(_phase==PHASE_MOVING || _phase==PHASE_SETTLING) ||
      _safety.validateTarget(_hardware.actualPanMdeg(),_hardware.actualTiltMdeg())!=SAFETY_OK) return false;
   _hardware.stopAllMotion(); _hardware.setCameraActive(false); _safety.stopMotion();
-  _stepTimedOut=true; _passiveSettling=true; _phaseStartedMs=nowMs;
+  _stepTimedOut=true; beginPassiveSettling(nowMs);
   strcpy(_lastError,"STEP_TARGET_MISSED"); transition(_state,PHASE_SETTLING); return true;
+}
+
+bool PanoramaExecutor::pauseRecoverable(const char *reason)
+{
+  if(!reason || !(_state==RUN_RUNNING || _state==RUN_PAUSE_PENDING) ||
+     _safety.validateTarget(_hardware.actualPanMdeg(),_hardware.actualTiltMdeg())!=SAFETY_OK) return false;
+  if(strcmp(reason,"EXPOSURE_UNSTABLE") && strcmp(reason,"CAPTURE_NOT_STABLE") &&
+     strcmp(reason,"MOTION_STALLED") && strcmp(reason,"MOTION_SETTLE_TIMEOUT") &&
+     strcmp(reason,"MOTION_FINE_TIMEOUT") && strcmp(reason,"MOVEMENT_TIMEOUT") &&
+     strcmp(reason,"MOTION_NOT_QUIET")) return false;
+  _hardware.stopAllMotion(); _hardware.setCameraActive(false); _safety.stopMotion();
+  strncpy(_lastError,reason,sizeof(_lastError)-1);_lastError[sizeof(_lastError)-1]=0;
+  // One retry at the same uncommitted image. A requested pause/navigation
+  // wins, and RESUME/reconnect cannot renew the budget at this image.
+  if(strcmp(reason,"EXPOSURE_UNSTABLE") && strcmp(reason,"CAPTURE_NOT_STABLE") &&
+     (_phase==PHASE_MOVING || _phase==PHASE_SETTLING) &&
+     _state==RUN_RUNNING && !_pauseRequested && !_pendingRewindColumns && !_pendingForwardColumns &&
+     _retriedImageIndex!=_nextImageIndex)
+  {
+    _retriedImageIndex=_nextImageIndex;
+    _events.onAcquisitionRetry(_nextImageIndex,reason);
+    transition(RUN_RUNNING,PHASE_SELECT_TARGET);
+    return true;
+  }
+  _pauseRequested=false; _pendingRewindColumns=_pendingForwardColumns=0;
+  transition(RUN_PAUSED,PHASE_NONE);
+  return true;
+}
+
+void PanoramaExecutor::beginPassiveSettling(uint32_t nowMs)
+{
+  _passiveSettling=true;_passiveWaitStartedMs=_phaseStartedMs=nowMs;
+  _capturePanMdeg=_hardware.actualPanMdeg();_captureTiltMdeg=_hardware.actualTiltMdeg();
+  _captureReady=_hardware.exposurePositionStable(_capturePanMdeg,_captureTiltMdeg);
 }
 
 void PanoramaExecutor::clearRun()
@@ -250,17 +299,17 @@ void PanoramaExecutor::tick(uint32_t nowMs)
      uint32_t(nowMs-_movementStartedMs)>=_incrementalMoveBudgetMs)
   {
     _hardware.stopAllMotion(); _hardware.setCameraActive(false); _safety.stopMotion();
-    _stepTimedOut=true; _passiveSettling=true; _phaseStartedMs=nowMs; strcpy(_lastError,"STEP_MOVE_TIMEOUT");
+    _stepTimedOut=true; beginPassiveSettling(nowMs); strcpy(_lastError,"STEP_MOVE_TIMEOUT");
     transition(_state,PHASE_SETTLING); return;
   }
   // After a deadline stop, this guard bounds passive settling, not motor drive.
-  if ((_phase == PHASE_MOVING || _phase == PHASE_SETTLING) &&
+  if (!_passiveSettling && (_phase == PHASE_MOVING || _phase == PHASE_SETTLING) &&
       uint32_t(nowMs-_movementStartedMs) >= PANORAMA_MOVEMENT_TIMEOUT_MS +
         (_stepTimedOut ? _incrementalMoveBudgetMs : 0))
-  { fault("MOVEMENT_TIMEOUT"); return; }
+  { if(!pauseRecoverable("MOVEMENT_TIMEOUT")) fault("MOVEMENT_TIMEOUT"); return; }
   if ((_phase == PHASE_TRIGGER_ACTIVE || _phase == PHASE_EXPOSURE_WAIT || _phase==PHASE_COMMIT_IMAGE) &&
       !_hardware.exposurePositionStable(_capturePanMdeg,_captureTiltMdeg))
-  { fault("EXPOSURE_UNSTABLE"); return; }
+  { if(!pauseRecoverable("EXPOSURE_UNSTABLE")) fault("EXPOSURE_UNSTABLE"); return; }
 
   switch (_phase)
   {
@@ -324,8 +373,7 @@ void PanoramaExecutor::tick(uint32_t nowMs)
           _phaseStartedMs = candidate ? quietSince : nowMs;
           if(_hardware.targetsReached())
           {
-            _capturePanMdeg=_hardware.actualPanMdeg(); _captureTiltMdeg=_hardware.actualTiltMdeg();
-            _hardware.stopAllMotion(); _safety.stopMotion(); _passiveSettling=true;
+            _hardware.stopAllMotion(); _safety.stopMotion(); beginPassiveSettling(nowMs);
           }
           transition(_state, PHASE_SETTLING);
         }
@@ -335,23 +383,30 @@ void PanoramaExecutor::tick(uint32_t nowMs)
     case PHASE_SETTLING:
       if(!_passiveSettling && _hardware.targetsReached())
       {
-        uint32_t quietSince;
-        if(_hardware.targetQuietSince(quietSince)) _phaseStartedMs=quietSince;
-        _capturePanMdeg=_hardware.actualPanMdeg(); _captureTiltMdeg=_hardware.actualTiltMdeg();
-        _hardware.stopAllMotion(); _safety.stopMotion(); _passiveSettling=true;
+        _hardware.stopAllMotion(); _safety.stopMotion(); beginPassiveSettling(nowMs);
       }
       if(_passiveSettling)
       {
         // Confirmed arrival and deadline stops both coast passively. Never
         // re-enable torque while settling or restart strict arrival counting.
-        if(!(_stepTimedOut ? _hardware.stoppedPositionResting() :
-            _hardware.stoppedPositionStable(_capturePanMdeg,_captureTiltMdeg))) _phaseStartedMs=nowMs;
-        else if(elapsed(nowMs,_plan.settleTimeMs))
-        {
-          _capturePanMdeg=_hardware.actualPanMdeg();
-          _captureTiltMdeg=_hardware.actualTiltMdeg();
-          _hardware.setCameraActive(true); _phaseStartedMs=nowMs;
-          transition(_state,PHASE_TRIGGER_ACTIVE);
+        if(uint32_t(nowMs-_passiveWaitStartedMs)>=_plan.settleTimeMs+_hardware.captureStabilityWaitMs())
+        { if(!pauseRecoverable("CAPTURE_NOT_STABLE")) fault("CAPTURE_NOT_STABLE"); return; }
+        int32_t pan=_hardware.actualPanMdeg(),tilt=_hardware.actualTiltMdeg();
+        bool stable=(_stepTimedOut ? _hardware.stoppedPositionResting() :
+            _hardware.stoppedPositionStable(_capturePanMdeg,_captureTiltMdeg)) &&
+            _hardware.exposurePositionStable(_capturePanMdeg,_captureTiltMdeg) &&
+            _hardware.exposurePositionStable(pan,tilt);
+        if(!stable) {
+          _captureReady=false;_phaseStartedMs=nowMs;
+          _capturePanMdeg=pan;_captureTiltMdeg=tilt;
+        } else {
+          if(!_captureReady) {_captureReady=true;_phaseStartedMs=nowMs;}
+          if(elapsed(nowMs,_plan.settleTimeMs))
+          {
+            _capturePanMdeg=pan;_captureTiltMdeg=tilt;
+            _hardware.setCameraActive(true); _phaseStartedMs=nowMs;
+            transition(_state,PHASE_TRIGGER_ACTIVE);
+          }
         }
         return;
       }

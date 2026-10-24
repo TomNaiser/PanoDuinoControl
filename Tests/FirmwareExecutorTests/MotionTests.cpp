@@ -597,7 +597,7 @@ static void testConfigurableLoadedDownwardStart()
     check(motion.status(true).signedPwm==0,"Erfolg und blockierter Anlauf enden mit abgeschaltetem Motor");
   }
   MotionSettings limits;
-  check(!limits.set(MP_TRAVEL_DOWN_START_PWM_MAX,41000),"Abwaerts-Anlauf oberhalb PWM 40 bleibt ungueltig");
+  check(!limits.set(MP_TRAVEL_DOWN_START_PWM_MAX,50001),"Abwaerts-Anlauf oberhalb PWM 50 bleibt ungueltig");
   limits.set(MP_TRAVEL_DOWN_START_PWM_MAX,38000); limits.set(MP_TRAVEL_PWM_MAX,37000);
   check(limits.validate()!=0,"Abwaerts-Anlauf darf die vom Benutzer reduzierte Gesamtgrenze nicht umgehen");
 }
@@ -1335,6 +1335,75 @@ static void testManualPanSteadyVelocity()
   }
 }
 
+int runLoadedTiltReserveRegressions()
+{
+  int before=motionChecks;
+  for(int direction : {1,-1}) for(int maximum : {40,50}) {
+    MotionController motion; initialize(motion);
+    MotionSettings settings=motion.settings();
+    bool configured=settings.set(MP_TRAVEL_PWM_MAX,maximum*1000) &&
+      settings.set(MP_TRAVEL_DOWN_START_PWM_MAX,maximum*1000) &&
+      settings.set(MP_TRAVEL_DOWN_I_MAX,(maximum-25)*1000) && motion.configure(settings);
+    check(configured,"Tilt-Leistungsreserve muss explizit konfigurierbar sein");
+    check(motion.commandPositioning(0,direction*10.0,500,500),"Beladene Tiltfahrt nutzt den echten Aufnahme-Fahrbefehl");
+    double position=0,velocity=0; int peak=0;
+    for(uint32_t now=200;now<30000 && !motion.fault() && !motion.reached();now+=20) {
+      motion.tick(now,0,direction*position,true,true);
+      int pwm=motion.status(true).signedPwm*direction; peak=std::max(peak,pwm);
+      if(velocity<0.05 && pwm<45) velocity=0;
+      else velocity=std::max(0.0,velocity+(pwm-36-velocity/0.8)*0.02/0.18);
+      position+=velocity*0.02;
+    }
+    std::cout<<"Loaded tilt dir="<<direction<<" cap="<<maximum<<" position="<<position<<" peakPwm="<<peak
+      <<" fault="<<(motion.fault()?motion.fault():"none")<<std::endl;
+    if(maximum==40) check(motion.fault() && std::strcmp(motion.fault(),"MOTION_STALLED")==0 && position==0,
+      "Zu schwache Tilt-Leistungsgrenze reproduziert den Anlaufstillstand statt den Schutz zu verlaengern");
+    else check(!motion.fault() && motion.reached() && std::abs(position-10)<=0.3 && peak<=50 && motion.status(true).signedPwm==0,
+      "Konfigurierte Tilt-Reserve ueberwindet die Last und behaelt Zielruhe und Leistungsgrenze");
+  }
+  for(int direction : {-1,1}) {
+    MotionController blocked; initialize(blocked);
+    MotionSettings settings=blocked.settings();settings.set(MP_TRAVEL_PWM_MAX,50000);settings.set(MP_TRAVEL_DOWN_START_PWM_MAX,50000);
+    check(blocked.configure(settings) && blocked.commandPositioning(0,direction*10,500,500),"Blockadepruefung nutzt erhoehte Tilt-Anlaufreserve");
+    uint32_t now=200;
+    for(;now<3000 && !blocked.fault();now+=20) blocked.tick(now,0,0,true,true);
+    check(blocked.fault() && std::strcmp(blocked.fault(),"MOTION_STALLED")==0 && now<=1700 &&
+      blocked.status(true).signedPwm==0 && blocked.status(false).signedPwm==0,
+      "Mehr Tilt-Reserve verlaengert keine echte Blockade und schaltet weiterhin beide Motoren ab");
+  }
+  return motionChecks-before;
+}
+
+int runWeakDriveRegressions()
+{
+  int before=motionChecks;
+  // A real acquisition target, initially easy running, then increased load.
+  // Keep the load below the existing PWM cap; only torque recovery is tested.
+  for(int direction : {-1,1}) {
+    MotionController motion; initialize(motion);
+    MotionSettings settings=motion.settings(); settings.set(MP_PAN_JOG_START_PWM,50000);
+    motion.configure(settings);
+    check(motion.commandPositioning(direction*20.0,0,200,200),"Lastwechsel nutzt den echten Aufnahme-Fahrbefehl");
+    double position=0,velocity=0;
+    unsigned pause=0,longest=0; int peak=0;
+    for(uint32_t now=200;now<30000 && !motion.fault() && !motion.reached();now+=20) {
+      motion.tick(now,direction*position,0,true,true);
+      int pwm=motion.status(false).signedPwm*direction; peak=std::max(peak,pwm);
+      double friction=position<5.0 ? 10.0 : 34.0;
+      double breakaway=position<5.0 ? 20.0 : 45.0;
+      if(velocity<0.05 && pwm<breakaway) velocity=0;
+      else velocity=std::max(0.0,velocity+(pwm-friction-velocity/1.3)*0.02/0.18);
+      position+=velocity*0.02;
+      if(position>5 && position<19 && velocity<0.05) {pause+=20;longest=std::max(longest,pause);} else pause=0;
+    }
+    std::cout<<"Weak drive dir="<<direction<<" position="<<position<<" longestPauseMs="<<longest<<" peakPwm="<<peak
+      <<" fault="<<(motion.fault()?motion.fault():"none")<<std::endl;
+    check(longest<=1000,"Schwache Ansteuerung muss innerhalb 1000 ms Lastreserve aufbauen statt sekundenlang stehenzubleiben");
+    check(!motion.fault() && motion.reached() && peak<=50,"Lastreserve erreicht das Ziel innerhalb bestehender Leistungsgrenze");
+  }
+  return motionChecks-before;
+}
+
 int runPanoramaNavigationRegressions()
 {
   int before=motionChecks;
@@ -1456,7 +1525,7 @@ int runColumnArrivalRegressions()
   // The user run reached column four with Pan resting 0.23 degrees beyond
   // its endpoint while Tilt still had about six degrees of return left.
   // Replay that finite arrival/coast pattern through the real controller.
-  for(double error : {0.23,-0.23,0.31,0.45}) {
+  for(double error : {0.23,-0.23,0.31,0.45,-0.31,-0.472}) {
     MotionController motion; initialize(motion,0,-13.561);
     MotionSettings settings=motion.settings();
     settings.set(MP_PAN_JOG_START_PWM,50000);
@@ -1481,7 +1550,64 @@ int runColumnArrivalRegressions()
       check(motion.fault() && std::strcmp(motion.fault(),"MOTION_TARGET_MISSED")==0 &&
         motion.status(false).signedPwm==0 && motion.status(true).signedPwm==0,
         "Pan-Ankunft ausserhalb der festgelegten Toleranz stoppt weiterhin beide Motoren");
+      check(std::abs(tilt.position-8.020)<=0.3,
+        "Pan-Zielwarnung darf die noch weit vom Ziel entfernte Tilt-Rueckfahrt nicht abbrechen");
     }
+  }
+  return motionChecks-before;
+}
+
+int runConcurrentArrivalSafetyRegressions()
+{
+  int before=motionChecks;
+  for(int action=0;action<3;++action) {
+    MotionController motion;initialize(motion,0,-13.561);MotionSettings settings=motion.settings();
+    settings.set(MP_PAN_JOG_START_PWM,50000);settings.set(MP_PAN_TARGET_COAST_DECELERATION,60000);
+    settings.set(MP_POSITION_ENTER_DEG,300);settings.set(MP_POSITION_EXIT_DEG,400);
+    check(motion.configure(settings) && motion.commandColumnReturn(2.062,8.020,1000,1000),"Gekoppelte Schutzpruefung startet echte Spaltenrueckfahrt");
+    FrictionTiltDrive tilt(-13.561,1.3,22,19,28);uint32_t now=200;bool pending=false;
+    for(;now<6000 && !motion.fault();now+=20) {
+      double pan=std::min(2.512,std::max(0.0,(double(now)-800)*0.008));
+      motion.tick(now,pan,tilt.position,true,true);tilt.step(motion.status(true).signedPwm);
+      if(motion.status(false).driveStage==DRIVE_SETTLE && !motion.status(false).withinTolerance) {pending=true;break;}
+    }
+    check(pending && !motion.fault() && motion.status(false).signedPwm==0 && tilt.position<7.7,
+      "Verfehlte Pan-Achse bleibt stromlos, waehrend die andere Achse noch fahren darf");
+    if(action==0) {
+      motion.tick(now+20,2.512,tilt.position,false,true);
+      check(motion.fault() && std::strcmp(motion.fault(),"MOTION_SENSOR")==0 &&
+        motion.status(false).signedPwm==0 && motion.status(true).signedPwm==0,
+        "Sensorfehler stoppt trotz aufgeschobener Zielwarnung sofort beide Achsen");
+    } else if(action==1) {
+      for(uint32_t t=now+20;t<now+5000 && !motion.fault();t+=20) motion.tick(t,2.512,tilt.position,true,true);
+      check(motion.fault() && std::strcmp(motion.fault(),"MOTION_STALLED")==0 &&
+        motion.status(false).signedPwm==0 && motion.status(true).signedPwm==0,
+        "Blockierte zweite Achse behaelt den normalen Stillstandsschutz");
+    } else {
+      motion.tick(now+20,2.512,tilt.position,true,false);
+      check(!motion.fault() && motion.status(false).signedPwm==0 && motion.status(true).signedPwm==0,
+        "Entzogene Fahrfreigabe verwirft auch die aufgeschobene Zielwarnung");
+      motion.resetFeedback();initialize(motion);
+      check(motion.commandColumnReturn(0,2,500,500),"Neuer Auftrag nach Stop wird ohne alten Warnzustand angenommen");
+    }
+  }
+  {
+    MotionController motion;initialize(motion);MotionSettings settings=motion.settings();
+    settings.set(MP_TRAVEL_POSITION_ENTER_DEG,300);settings.set(MP_TRAVEL_POSITION_EXIT_DEG,400);
+    motion.configure(settings);motion.commandColumnReturn(20,3,1000,1000);
+    bool pending=false,panDrivenAfterMiss=false;
+    for(uint32_t now=200;now<30000 && !motion.fault();now+=20) {
+      double pan=std::min(20.0,(now-200)*.001);
+      double tilt=std::min(3.4,(now-200)*.006);
+      motion.tick(now,pan,tilt,true,true);
+      if(motion.status(true).driveStage==DRIVE_SETTLE && !motion.status(true).withinTolerance) {
+        pending=true;panDrivenAfterMiss=panDrivenAfterMiss || motion.status(false).signedPwm>0;
+        check(motion.status(true).signedPwm==0,"Zuerst verfehlte Tilt-Achse erhaelt keine weitere Leistung");
+      }
+      if(motion.fault()) check(pan>=19.7,"Tilt-Zielwarnung darf die noch laufende Pan-Fahrt nicht vorzeitig abbrechen");
+    }
+    check(pending && panDrivenAfterMiss && motion.fault() && std::strcmp(motion.fault(),"MOTION_TARGET_MISSED")==0 &&
+      std::abs(motion.status(false).position-20)<=.3,"Auch bei vertauschten Achsen wird erst nach Abschluss der anderen Fahrt gewarnt");
   }
   return motionChecks-before;
 }

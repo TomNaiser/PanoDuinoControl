@@ -113,6 +113,7 @@ private:
   double controlFine(Axis &axis,uint32_t nowMs,double dt);
   static bool stagedTravel(const Axis &axis);
   void fail(const char *reason);
+  void targetMissed(Axis &axis);
   static double span(const Axis &axis);
   static double meanPosition(const Axis &axis);
   static double recentPosition(const Axis &axis, uint8_t maximumSamples);
@@ -123,6 +124,7 @@ private:
   uint32_t _lastSampleMs, _sampleSequence;
   bool _hasSample;
   const char *_fault;
+  uint8_t _targetMissedAxes;
 };
 
 #endif

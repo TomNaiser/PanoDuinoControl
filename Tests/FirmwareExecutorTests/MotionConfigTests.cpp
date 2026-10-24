@@ -2,6 +2,7 @@
 #include "MotionConfigStore.h"
 #include "DeviceRevision22Fixture.h"
 #include "DeviceRevision23Fixture.h"
+#include "DeviceRevision25Fixture.h"
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
@@ -34,8 +35,11 @@ int runMotionConfigTests()
     "Schrittbudget 3000 ms ist aenderbar, aber weder null noch ueber absolutem Bewegungsbudget");
   check(defaults.number(MP_TRAVEL_POSITION_ENTER_DEG)==0.30 && defaults.values[MP_FINE_ENABLED]==0,
     "Tilt-Toleranz bleibt 0.30 Grad und ungepruefte Feinannaeherung standardmaessig aus");
-  check(!defaults.set(MOTION_PARAMETER_COUNT,1) && !defaults.set(MP_TRAVEL_PWM_MAX,41000),
+  check(!defaults.set(MOTION_PARAMETER_COUNT,1) && !defaults.set(MP_TRAVEL_PWM_MAX,50001) &&
+    !defaults.set(MP_TRAVEL_DOWN_START_PWM_MAX,50001) && !defaults.set(MP_TRAVEL_DOWN_I_MAX,25001),
     "Unbekannte Parameter und ueberschrittene Stellgrenzen abgelehnt");
+  check(defaults.values[MP_TRAVEL_PWM_MAX]==40000 && defaults.values[MP_TRAVEL_DOWN_START_PWM_MAX]==34000 &&
+    defaults.values[MP_TRAVEL_DOWN_I_MAX]==12000,"Neue Tilt-Reserve erhoeht keine vorhandenen Standardleistungen");
   MotionSettings invalid=defaults;
   invalid.values[MP_PAN_TARGET_PREDICTION_SAMPLES]=3;
   check(invalid.validate()!=0,"Bremsmodell verlangt ausgeschaltet oder mindestens fuenf Proben");
@@ -47,6 +51,17 @@ int runMotionConfigTests()
   invalid=defaults; invalid.values[MP_FINE_ENABLED]=1; invalid.values[MP_FINE_MAX_PASSES]=0;
   check(invalid.validate()!=0,"Aktivierte Feinannaeherung ohne begrenzten einzelnen Durchlauf abgelehnt");
 
+  {
+    FakeConfigStorage oldStorage;MotionConfigStore oldStore(oldStorage);StoredMotionConfig &old=oldStorage.slots[0];
+    old.magic=0x4D4F5431UL;old.schema=1;old.count=128;old.revision=25;
+    memcpy(old.values,deviceRevision25,sizeof(deviceRevision25));old.values[128]=(int32_t)deviceRevision25Crc;
+    MotionSettings migrated;uint32_t loadedRevision=0;
+    check(oldStore.load(migrated,loadedRevision) && loadedRevision==25 &&
+      !memcmp(migrated.values,deviceRevision25,sizeof(deviceRevision25)) && migrated.values[MP_CAPTURE_SETTLE_WAIT_MS]==15000,
+      "Heutiges 128-Werte-Profil bleibt unveraendert, neue passive Wartezeit erhaelt ihren Standardwert");
+    check(oldStore.save(migrated,26) && oldStore.load(migrated,loadedRevision) && loadedRevision==26 &&
+      !memcmp(migrated.values,deviceRevision25,sizeof(deviceRevision25)),"Erweiterter Datensatz wird ohne Verlust gespeichert und zurueckgelesen");
+  }
   FakeConfigStorage storage; MotionConfigStore store(storage);
   MotionSettings read; uint32_t revision=0;
   {

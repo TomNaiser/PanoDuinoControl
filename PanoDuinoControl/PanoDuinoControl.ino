@@ -161,6 +161,7 @@ public:
   }
   bool exposurePositionStable(int32_t pan,int32_t tilt)
   { return PanAxisSensorAvailable && TiltAxisSensorAvailable && _motion.passiveCaptureStable(millis(),pan/1000.0,tilt/1000.0); }
+  uint32_t captureStabilityWaitMs() const { return _motion.settings().milliseconds(MP_CAPTURE_SETTLE_WAIT_MS); }
   bool stoppedPositionResting() const
   { return PanAxisSensorAvailable && TiltAxisSensorAvailable && _motion.feedbackResting(millis()); }
   bool stoppedPositionStable(int32_t pan,int32_t tilt) const

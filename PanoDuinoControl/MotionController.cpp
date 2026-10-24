@@ -114,7 +114,7 @@ void MotionProfile::evaluate(double seconds, double &position, double &velocity,
   acceleration = bezier(second, 4, time);
 }
 
-MotionController::MotionController() : _lastSampleMs(0), _sampleSequence(0), _hasSample(false), _fault(0)
+MotionController::MotionController() : _lastSampleMs(0), _sampleSequence(0), _hasSample(false), _fault(0), _targetMissedAxes(0)
 {
   // Global construction runs with the R4 boot stack limited to 1024 bytes.
   // Use our already-constructed settings; never create full config temporaries.
@@ -122,7 +122,7 @@ MotionController::MotionController() : _lastSampleMs(0), _sampleSequence(0), _ha
 }
 
 MotionController::MotionController(const AxisMotionConfiguration &panConfiguration,
-  const AxisMotionConfiguration &tiltConfiguration) : _lastSampleMs(0), _sampleSequence(0), _hasSample(false), _fault(0)
+  const AxisMotionConfiguration &tiltConfiguration) : _lastSampleMs(0), _sampleSequence(0), _hasSample(false), _fault(0), _targetMissedAxes(0)
 {
   _settings.setAxis(false,panConfiguration); _settings.setAxis(true,tiltConfiguration);
   initializeAxes(panConfiguration,tiltConfiguration);
@@ -176,7 +176,7 @@ bool MotionController::command(double panTarget, double tiltTarget, uint16_t pan
   for (unsigned int i = 0; i < 2; ++i)
   {
     Axis &axis = _axes[i];
-    changed[i] = !axis.active || fabs(targets[i] - axis.target) > 1e-8;
+    changed[i] = !axis.active || fabs(targets[i] - axis.target) > 1e-8 || (_targetMissedAxes & (1U<<i));
     if (!changed[i]) continue; // Preserve the other axis's holding state and estimator.
     double start = axis.active && !axis.profileComplete ? axis.reference : axis.position;
     bool following = axis.active && !axis.profileComplete;
@@ -210,6 +210,7 @@ bool MotionController::command(double panTarget, double tiltTarget, uint16_t pan
     axis.positioningTarget=false;
     axis.positioningAcceleration=0;
     if (!changed[i]) continue;
+    _targetMissedAxes &= ~(1U<<i);
     if(!axis.active) { axis.integral=0; axis.integralDirection=0; }
     axis.jog=axis.jogVelocity=axis.manualTarget=false;
     axis.profile = plans[i]; axis.target = targets[i]; axis.profileTime = 0;
@@ -404,7 +405,7 @@ double MotionController::controlTravel(Axis &axis, uint32_t nowMs, double dt)
   if(axis.driveStage==DRIVE_SETTLE)
   {
     if(fabs(axis.target-position)>_settings.number(MP_TRAVEL_POSITION_EXIT_DEG))
-    { fail("MOTION_TARGET_MISSED"); return 0; }
+    { targetMissed(axis); return 0; }
     return 0;
   }
   if(axis.driveStage==DRIVE_BRAKE)
@@ -424,7 +425,7 @@ double MotionController::controlTravel(Axis &axis, uint32_t nowMs, double dt)
            (axis.target-position)*axis.travelDirection>0 &&
            fabs(axis.target-position)<=_settings.number(MP_FINE_MAX_DISTANCE))
         { beginFine(axis,nowMs,0); return 0; }
-        fail("MOTION_TARGET_MISSED"); return 0;
+        targetMissed(axis); return 0;
       }
       axis.driveStage=DRIVE_SETTLE; axis.correcting=false;
     }
@@ -585,7 +586,7 @@ double MotionController::controlJogPan(Axis &axis,uint32_t nowMs,double dt)
         if(!axis.brakeQuiet) { axis.brakeQuiet=true; axis.brakeQuietStartedMs=nowMs; }
         if(uint32_t(nowMs-axis.brakeQuietStartedMs)>=_settings.milliseconds(MP_CONFIRM_MS)) {
           if(fabs(axis.target-meanPosition(axis))>tolerance+1e-9)
-          { fail("MOTION_TARGET_MISSED"); return 0; }
+          { targetMissed(axis); return 0; }
           axis.driveStage=DRIVE_SETTLE;
         }
       }
@@ -665,6 +666,11 @@ double MotionController::controlJogPan(Axis &axis,uint32_t nowMs,double dt)
   if(!continuous && error<-_settings.number(MP_VELOCITY_EXIT_DPS)) axis.integral=fmin(axis.integral,0.0);
   double integralMaximum=maximum-bias+(continuous ? _settings.number(MP_JOG_VELOCITY_P_GAIN)*axis.jogMaximumSpeed : 0.0);
   double candidate=bounded(axis.integral+gain*error*dt,_settings.number(MP_JOG_MIN_PWM)-bias,integralMaximum);
+  // Sustained missing progress confirms a real load increase. Release the
+  // previous overspeed reduction before building further bounded torque.
+  if(finite && recovering && error>0 && axis.progressWatch &&
+     uint32_t(nowMs-axis.progressStartedMs)>=_settings.milliseconds(MP_PAN_TARGET_RECOVERY_DELAY_MS))
+    candidate=fmax(0.0,candidate);
   if(!continuous && error<-_settings.number(MP_VELOCITY_EXIT_DPS)) candidate=fmin(candidate,0.0);
   double proportional=finite ? _settings.number(MP_PAN_JOG_P_GAIN) : continuous ? jogVelocityGain(axis,MP_TRAVEL_LOW_P_GAIN,MP_JOG_VELOCITY_P_GAIN) : _settings.number(MP_PAN_JOG_P_GAIN);
   double desired=bias+proportional*error+candidate;
@@ -723,6 +729,7 @@ double MotionController::controlFine(Axis &axis,uint32_t nowMs,double dt)
 
 void MotionController::control(Axis &axis, uint32_t nowMs, double dt)
 {
+  if(_targetMissedAxes & (1U<<(&axis==&_axes[1] ? 1 : 0))) { axis.output=axis.integral=0; return; }
   if (!axis.active) { axis.output = 0; return; }
   bool travel=stagedTravel(axis);
   bool manualPan=(axis.manualTarget || axis.positioningTarget) && &axis==&_axes[0] && !travel;
@@ -847,6 +854,7 @@ void MotionController::control(Axis &axis, uint32_t nowMs, double dt)
   }
   if(travel) { desired=controlTravel(axis,nowMs,dt); if(_fault) return; }
   else if(axis.jog || manualPan) { desired=controlJogPan(axis,nowMs,dt); if(_fault) return; }
+  if(_targetMissedAxes & (1U<<(&axis==&_axes[1] ? 1 : 0))) return;
   desired = bounded(desired, -axis.configuration.maximumPwm, axis.configuration.maximumPwm);
   int8_t direction = polarity(desired);
   double filteredTargetError=axis.target-meanPosition(axis);
@@ -941,6 +949,16 @@ void MotionController::tick(uint32_t nowMs, double panPosition, double tiltPosit
   if (_fault) return;
   control(_axes[0], nowMs, dt);
   if (!_fault) control(_axes[1], nowMs, dt);
+  // A resting axis outside its arrival tolerance is a quality result. Let
+  // the other axis finish its bounded move before reporting that result.
+  // Sensor, stall, reversal and control faults still stop both immediately.
+  if(!_fault && _targetMissedAxes) {
+    bool finished=true;
+    for(unsigned int i=0;i<2;++i)
+      if(!(_targetMissedAxes & (1U<<i)) && (!_axes[i].quiet ||
+         uint32_t(nowMs-_axes[i].quietStartedMs)<_settings.milliseconds(MP_CONFIRM_MS))) finished=false;
+    if(finished) fail("MOTION_TARGET_MISSED");
+  }
 }
 
 #if defined(PANODUINO_MOTION_TRACE) || defined(PANODUINO_HOST_TEST)
@@ -967,6 +985,15 @@ void MotionController::disable()
     axis.fineUsed=false; axis.fineStartedMs=0; axis.brakeQuiet=false; axis.brakeQuietStartedMs=0;
   }
   _fault = 0;
+  _targetMissedAxes = 0;
+}
+
+void MotionController::targetMissed(Axis &axis)
+{
+  _targetMissedAxes |= 1U<<(&axis==&_axes[1] ? 1 : 0);
+  axis.output=axis.integral=0;axis.profileComplete=true;axis.correcting=false;
+  axis.reversing=axis.progressWatch=axis.reversalWatch=axis.quiet=false;
+  axis.driveStage=DRIVE_SETTLE;
 }
 
 void MotionController::fail(const char *reason)
@@ -984,7 +1011,7 @@ void MotionController::resetFeedback()
 
 bool MotionController::quietSince(uint32_t &sinceMs) const
 {
-  if (_fault || !_axes[0].active || !_axes[1].active || !_axes[0].quiet || !_axes[1].quiet) return false;
+  if (_fault || _targetMissedAxes || !_axes[0].active || !_axes[1].active || !_axes[0].quiet || !_axes[1].quiet) return false;
   uint32_t age = (uint32_t)(_lastSampleMs - _axes[0].quietStartedMs);
   uint32_t tiltAge = (uint32_t)(_lastSampleMs - _axes[1].quietStartedMs);
   sinceMs = _lastSampleMs - (age < tiltAge ? age : tiltAge);
@@ -1029,6 +1056,7 @@ AxisMotionStatus MotionController::status(bool tiltAxis) const
     (stagedTravel(axis) ? (axis.quiet ? _settings.number(MP_TRAVEL_POSITION_EXIT_DEG) : _settings.number(MP_TRAVEL_POSITION_ENTER_DEG)) :
     (axis.quiet ? _settings.number(MP_POSITION_EXIT_DEG) : _settings.number(MP_POSITION_ENTER_DEG)));
   value.quiet = axis.quiet;
+  if(_targetMissedAxes & (1U<<(tiltAxis ? 1 : 0))) value.withinTolerance=false;
   value.driveStage=axis.driveStage;
   return value;
 }

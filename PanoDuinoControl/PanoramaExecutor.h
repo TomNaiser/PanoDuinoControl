@@ -54,6 +54,7 @@ public:
   virtual uint32_t manualJogLeaseMs() const { return 750; }
   virtual bool targetsReached() = 0;
   virtual bool exposurePositionStable(int32_t pan, int32_t tilt) { return stoppedPositionStable(pan,tilt); }
+  virtual uint32_t captureStabilityWaitMs() const { return 15000; }
   // Passive feedback only: never request a new target after a timed-out step.
   virtual bool stoppedPositionResting() const { return false; }
   virtual bool stoppedPositionStable(int32_t, int32_t) const { return false; }
@@ -86,13 +87,18 @@ public:
   virtual ~IExecutorEvents() {}
   virtual void onStateChanged(RunStateV2 state) = 0;
   virtual void onPhaseChanged(RunPhaseV2 previousPhase, RunPhaseV2 phase) = 0;
+  virtual void onAcquisitionRetry(uint32_t, const char *) {}
   virtual void onImageCompleted(const TargetPositionV2 &target, int32_t actualPanMdeg, int32_t actualTiltMdeg,
                                 uint32_t captureSequence, uint16_t planRevision) = 0;
 };
 
-// Ein Segment entsteht beim Start und nach jedem Spaltenwechsel. Fuenf Segmente
-// erlauben vier Spruenge, ohne unvertretbar viel Nano-SRAM zu binden.
+// Segments retain capture history across column jumps/retries. The R4 has room
+// for 64; the classic Nano retains its five-segment SRAM budget.
+#if defined(ARDUINO_NANO_R4) || defined(PANODUINO_HOST_TEST)
+const uint8_t MAX_RUN_SEGMENTS_V2 = 64;
+#else
 const uint8_t MAX_RUN_SEGMENTS_V2 = 5;
+#endif
 
 struct RunSegmentV2
 {
@@ -116,6 +122,8 @@ public:
   void emergencyStop(const char *reason);
   void fault(const char *reason);
   bool stopMissedTarget(const char *reason,uint32_t nowMs);
+  bool pauseRecoverable(const char *reason);
+  const char *retryColumn(uint32_t runId,uint16_t previous);
   void clearRun();
   void tick(uint32_t nowMs);
 
@@ -147,6 +155,7 @@ private:
   void applyForwardColumns(uint16_t columns);
   void applyTiming(uint32_t settleMs, uint32_t triggerMs, uint32_t exposureMs);
   bool elapsed(uint32_t nowMs, uint32_t durationMs) const;
+  void beginPassiveSettling(uint32_t nowMs);
 
   IPanoramaHardware &_hardware;
   SafetyController &_safety;
@@ -159,8 +168,11 @@ private:
   uint32_t _movementStartedMs;
   uint32_t _incrementalMoveBudgetMs;
   bool _stepTimedOut, _passiveSettling;
+  uint32_t _passiveWaitStartedMs;
+  bool _captureReady;
   int32_t _capturePanMdeg, _captureTiltMdeg;
   uint32_t _nextImageIndex;
+  uint32_t _retriedImageIndex;
   uint32_t _captureCount;
   uint16_t _planRevision;
   RunSegmentV2 _segments[MAX_RUN_SEGMENTS_V2];

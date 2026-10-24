@@ -29,8 +29,9 @@ MOTION_PARAMETER(TRAVEL_UP_HANDOFF_PROGRESS_DEG, "control.travelUpHandoffProgres
 MOTION_PARAMETER(TRAVEL_BRAKE_LEAD_SECONDS, "control.travelBrakeLeadSeconds", "s", 1000, 50, 0, 200)
 MOTION_PARAMETER(TRAVEL_START_BRAKE_LEAD_SECONDS, "control.travelStartBrakeLeadSeconds", "s", 1000, 75, 0, 200)
 MOTION_PARAMETER(TRAVEL_DOWN_BRAKE_LEAD_SECONDS, "control.travelDownBrakeLeadSeconds", "s", 1000, 80, 0, 200)
-MOTION_PARAMETER(TRAVEL_PWM_MAX, "control.travelPwmMax", "PWM", 1000, 40000, 20000, 40000)
-MOTION_PARAMETER(TRAVEL_DOWN_START_PWM_MAX, "control.travelDownStartPwmMax", "PWM", 1000, 34000, 20000, 40000)
+// Explicit loaded-Tilt reserve; existing defaults and stored values stay unchanged.
+MOTION_PARAMETER(TRAVEL_PWM_MAX, "control.travelPwmMax", "PWM", 1000, 40000, 20000, 50000)
+MOTION_PARAMETER(TRAVEL_DOWN_START_PWM_MAX, "control.travelDownStartPwmMax", "PWM", 1000, 34000, 20000, 50000)
 MOTION_PARAMETER(TRAVEL_DOWN_START_CONFIRM_PROGRESS_DEG, "control.travelDownStartConfirmProgressDeg", "deg", 1000, 300, 44, 1000)
 MOTION_PARAMETER(TRAVEL_PWM_REDUCTION_MAX, "control.travelPwmReductionMax", "PWM", 1000, 4000, 0, 10000)
 MOTION_PARAMETER(TRAVEL_DOWN_PWM_REDUCTION_MAX, "control.travelDownPwmReductionMax", "PWM", 1000, 10000, 0, 15000)
@@ -68,7 +69,7 @@ MOTION_PARAMETER(TRACKING_MAX_DPS, "control.trackingVelocityCorrectionDps", "deg
 MOTION_PARAMETER(VELOCITY_INTEGRAL_MAX, "control.velocityIntegralMaximumPwm", "PWM", 1000, 24000, 0, 24000)
 MOTION_PARAMETER(FRICTION_FULL_DPS, "control.frictionFullVelocityDps", "deg/s", 1000, 250, 50, 1000)
 MOTION_PARAMETER(TRAVEL_BASE_I_GAIN, "tilt.cruiseIntegralGain", "PWM/deg", 1000, 3000, 0, 40000)
-MOTION_PARAMETER(TRAVEL_DOWN_I_MAX, "tilt.downIntegralMaximumPwm", "PWM", 1000, 12000, 0, 15000)
+MOTION_PARAMETER(TRAVEL_DOWN_I_MAX, "tilt.downIntegralMaximumPwm", "PWM", 1000, 12000, 0, 25000)
 MOTION_PARAMETER(TRAVEL_UP_I_REDUCTION_MAX, "tilt.upIntegralReductionMaximumPwm", "PWM", 1000, 6000, 0, 10000)
 MOTION_PARAMETER(TRAVEL_OVERSPEED_P_GAIN, "tilt.overspeedProportionalGain", "PWM/(deg/s)", 1000, 3000, 0, 10000)
 MOTION_PARAMETER(TRAVEL_LOW_P_GAIN, "tilt.cruiseProportionalGain", "PWM/(deg/s)", 1000, 500, 0, 10000)
@@ -139,3 +140,5 @@ MOTION_PARAMETER(CAPTURE_TILT_WARNING_DEG, "capture.tiltWarningToleranceDeg", "d
 // bounded by these separate absolute ceilings, without changing manual drive.
 MOTION_PARAMETER(RUN_PAN_MAX_VELOCITY, "run.maximumPanVelocityDps", "deg/s", 1000, 20000, 100, 20000)
 MOTION_PARAMETER(RUN_TILT_MAX_VELOCITY, "run.maximumTiltVelocityDps", "deg/s", 1000, 20000, 100, 20000)
+// Extra passive waiting beyond the requested settle time; never extends motor drive.
+MOTION_PARAMETER(CAPTURE_SETTLE_WAIT_MS, "capture.maximumSettleWaitMs", "ms", 1, 15000, 1000, 120000)

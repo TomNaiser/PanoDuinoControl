@@ -118,6 +118,7 @@ void V2Controller::emergencyStop(const char *reason)
 void V2Controller::fault(const char *reason)
 {
   if(_executor.stopMissedTarget(reason,_currentTickMs)) return;
+  if(_executor.pauseRecoverable(reason)) { sendStatus(); return; }
   if(_manualMoveActive && reason && !strcmp(reason,"MOTION_TARGET_MISSED") &&
      _safety.validateTarget(_hardware.actualPanMdeg(),_hardware.actualTiltMdeg())==SAFETY_OK)
   {
@@ -395,6 +396,18 @@ void V2Controller::handleV2Frame(const V2Frame &frame, ProtocolV2 &protocol, uin
     else protocol.sendNack(frame.sequence, result);
     return;
   }
+  if(V2_MESSAGE_IS(frame.messageType,"RETRY_COLUMN"))
+  {
+    uint16_t previous=0;
+    if(frame.fieldCount!=2 || !parseUInt32(frame.fields[0],runId) || !parseUInt16(frame.fields[1],previous))
+    {protocol.sendNack(frame.sequence,"BAD_FIELD_COUNT");return;}
+    if(_manualMoveActive || _manualTriggerActive || _jogActive)
+    {protocol.sendNack(frame.sequence,"MANUAL_ACTION_ACTIVE");return;}
+    const char *result=_executor.retryColumn(runId,previous);
+    if(!strcmp(result,"COLUMN_RETRY_READY")) protocol.sendAck(frame.sequence,result);
+    else protocol.sendNack(frame.sequence,result);
+    sendStatus();return;
+  }
   if (V2_MESSAGE_IS(frame.messageType, "STOP"))
   {
     if (!requireRunId(frame, runId, protocol)) return;
@@ -660,6 +673,15 @@ void V2Controller::onStateChanged(RunStateV2 state)
   _protocol.beginFrame(V2_FLASH("STATE_CHANGED"));
   _protocol.addField(_eventSequence);
   addRunStateField(state);
+  _protocol.endFrame();
+}
+
+void V2Controller::onAcquisitionRetry(uint32_t imageIndex,const char *reason)
+{
+  _protocol.beginFrame(V2_FLASH("ACQUISITION_RETRY"));
+  _protocol.addField(_executor.plan().runId);
+  _protocol.addField(imageIndex);
+  _protocol.addField(reason);
   _protocol.endFrame();
 }
 
@@ -959,7 +981,7 @@ void V2Controller::recordDebug(DebugEventCodeV2 code)
 
 void V2Controller::sendPlan()
 {
-  if (_executor.state() == RUN_IDLE) return;
+  if (_executor.state() == RUN_IDLE || _executor.plan().runId==0) return;
   const PanoramaPlanV2 &plan = _executor.plan();
   _protocol.beginFrame(V2_FLASH("PLAN"));
   _protocol.addField(plan.runId);
@@ -1325,6 +1347,13 @@ void V2Controller::sendMotionConfigurationInfo()
   _protocol.addSignedField(settings.values[MP_CAPTURE_PAN_WARNING_DEG]);
   _protocol.addSignedField(settings.values[MP_CAPTURE_TILT_WARNING_DEG]);
   _protocol.addField(revision); _protocol.endFrame();
+  _protocol.beginFrame("CAPTURE_STABILITY_SETTINGS");
+  _protocol.addSignedField(settings.values[MP_CAPTURE_SPAN_DEG]);
+  _protocol.addSignedField(settings.values[MP_CAPTURE_PAN_DRIFT_DEG]);
+  _protocol.addSignedField(settings.values[MP_CAPTURE_TILT_DRIFT_DEG]);
+  _protocol.addField((uint32_t)settings.values[MP_CAPTURE_SETTLE_WAIT_MS]);
+  _protocol.addField(revision);_protocol.endFrame();
+  _protocol.beginFrame("CAPTURE_RECOVERY_CAPABILITIES");_protocol.addField((uint32_t)1);_protocol.endFrame();
 }
 
 bool V2Controller::handleMotionConfiguration(const V2Frame &f,ProtocolV2 &p,uint32_t now)
@@ -1335,10 +1364,17 @@ bool V2Controller::handleMotionConfiguration(const V2Frame &f,ProtocolV2 &p,uint
     apply=V2_MESSAGE_IS(f.messageType,"APPLY_MOTION_CONFIG"),
     cancel=V2_MESSAGE_IS(f.messageType,"CANCEL_MOTION_CONFIG");
   bool warning=V2_MESSAGE_IS(f.messageType,"SET_CAPTURE_WARNING_TOLERANCE");
-  if(!get && !begin && !set && !apply && !cancel && !warning) return false;
+  bool stability=V2_MESSAGE_IS(f.messageType,"SET_CAPTURE_STABILITY");
+  bool readStability=V2_MESSAGE_IS(f.messageType,"GET_CAPTURE_STABILITY");
+  if(!get && !begin && !set && !apply && !cancel && !warning && !stability && !readStability) return false;
   MotionSettings active; uint32_t revision=0;
   if(!_hardware.getMotionConfiguration(active,revision))
   { p.sendNack(f.sequence,"CONFIG_UNSUPPORTED"); return true; }
+  if(readStability) {
+    if(f.fieldCount) p.sendNack(f.sequence,"BAD_FIELD_COUNT");
+    else {p.sendAck(f.sequence,"OK");sendMotionConfigurationInfo();}
+    return true;
+  }
   if(get)
   {
     uint16_t index=0;
@@ -1352,7 +1388,26 @@ bool V2Controller::handleMotionConfiguration(const V2Frame &f,ProtocolV2 &p,uint
     p.addSignedField(d.minimum); p.addSignedField(d.maximum); p.addSignedField(d.defaultValue);
     p.endFrame(); return true;
   }
-  if(!configurationWritable()) { p.sendNack(f.sequence,"CONFIG_BUSY"); return true; }
+  bool pausedCaptureEdit=stability && _executor.state()==RUN_PAUSED && !_safety.motionEnabled() &&
+    !_manualMoveActive && !_manualTriggerActive && !_jogActive && !_timelapseActive && !_benchActive;
+  if(!configurationWritable() && !pausedCaptureEdit) { p.sendNack(f.sequence,"CONFIG_BUSY"); return true; }
+  if(stability) {
+    int32_t span=0,pan=0,tilt=0,wait=0;uint32_t base=0;
+    if(_configToken) {p.sendNack(f.sequence,"CONFIG_EDIT_ACTIVE");return true;}
+    if(f.fieldCount!=5 || !parseInt32(f.fields[0],span) || !parseInt32(f.fields[1],pan) ||
+       !parseInt32(f.fields[2],tilt) || !parseInt32(f.fields[3],wait) ||
+       !parseUInt32(f.fields[4],base) || base!=revision || base==UINT32_MAX)
+    {p.sendNack(f.sequence,"CONFIG_REVISION");return true;}
+    bool changed=active.values[MP_CAPTURE_SPAN_DEG]!=span || active.values[MP_CAPTURE_PAN_DRIFT_DEG]!=pan ||
+      active.values[MP_CAPTURE_TILT_DRIFT_DEG]!=tilt || active.values[MP_CAPTURE_SETTLE_WAIT_MS]!=wait;
+    if(!active.set(MP_CAPTURE_SPAN_DEG,span) || !active.set(MP_CAPTURE_PAN_DRIFT_DEG,pan) ||
+       !active.set(MP_CAPTURE_TILT_DRIFT_DEG,tilt) || !active.set(MP_CAPTURE_SETTLE_WAIT_MS,wait))
+    {p.sendNack(f.sequence,"CONFIG_VALUE_RANGE");return true;}
+    const char *error=changed ? _hardware.applyMotionConfiguration(active,base+1) : 0;
+    if(error) p.sendNack(f.sequence,error);
+    else {p.sendAck(f.sequence,"STABILITY_SETTINGS_SAVED");sendMotionConfigurationInfo();}
+    return true;
+  }
   if(warning)
   {
     int32_t pan=0,tilt=0; uint32_t base=0;

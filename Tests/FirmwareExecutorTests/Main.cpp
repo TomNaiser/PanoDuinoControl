@@ -2,6 +2,7 @@
 #include <iostream>
 #include <deque>
 #include <string>
+#include <vector>
 #include "PanoramaExecutor.h"
 #include "ProtocolV2.h"
 #include "V2Controller.h"
@@ -103,16 +104,20 @@ public:
 class FakeEvents : public IExecutorEvents
 {
 public:
-  FakeEvents() : images(0), stateChanges(0), lastCaptureSequence(0), lastRevision(0) {}
+  FakeEvents() : images(0), retries(0), stateChanges(0), lastCaptureSequence(0), lastRevision(0) {}
   void onStateChanged(RunStateV2) { stateChanges++; }
   void onPhaseChanged(RunPhaseV2, RunPhaseV2) {}
-  void onImageCompleted(const TargetPositionV2 &, int32_t, int32_t, uint32_t captureSequence, uint16_t revision)
+  void onAcquisitionRetry(uint32_t,const char *) { ++retries; }
+  void onImageCompleted(const TargetPositionV2 &target, int32_t, int32_t, uint32_t captureSequence, uint16_t revision)
   {
     images++;
+    indices.push_back(target.imageIndex);
     lastCaptureSequence = captureSequence;
     lastRevision = revision;
   }
   int images;
+  int retries;
+  std::vector<uint32_t> indices;
   int stateChanges;
   uint32_t lastCaptureSequence;
   uint16_t lastRevision;
@@ -160,6 +165,7 @@ public:
   bool resting, captureStable;
   bool stoppedPositionResting() const { return resting; }
   bool stoppedPositionStable(int32_t, int32_t) const { return resting && captureStable; }
+  bool exposurePositionStable(int32_t,int32_t) { return resting && captureStable; }
   uint16_t columnReturnTiltTempo(uint16_t rowTempo) const
   { ++returnCalls; return returnTempo ? returnTempo : rowTempo; }
   uint16_t returnTempo;
@@ -192,14 +198,14 @@ static void testIncrementalMoveDeadline()
     assertTrue(!hardware.camera && hardware.targetCalls==calls,"Unruhiger Aufbau nach Timeout loest weder Foto noch Zielkorrektur aus");
     hardware.resting=true; executor.tick(start+hardware.stepBudgetMs+109);
     assertTrue(!hardware.camera,"Volle Beruhigungszeit seit letzter Unruhe wird eingehalten");
-    executor.tick(start+hardware.stepBudgetMs+110);
+    executor.tick(start+hardware.stepBudgetMs+119);
     assertTrue(hardware.camera && !hardware.reached && !safety.motionEnabled(),"Foto am erreichten Ort ohne Behauptung, das Planziel sei erreicht");
-    executor.tick(start+hardware.stepBudgetMs+140);
-    executor.tick(start+hardware.stepBudgetMs+190);
-    executor.tick(start+hardware.stepBudgetMs+191);
+    executor.tick(start+hardware.stepBudgetMs+149);
+    executor.tick(start+hardware.stepBudgetMs+199);
+    executor.tick(start+hardware.stepBudgetMs+200);
     assertTrue(executor.completedImages()==2 && executor.nextImageIndex()==2 && hardware.targetCalls==calls,
       "Timeout-Foto wird einmal verbucht; das verfehlte Ziel wird nicht erneut gefahren");
-    executor.tick(start+hardware.stepBudgetMs+192);
+    executor.tick(start+hardware.stepBudgetMs+201);
     assertTrue(hardware.targetCalls==calls+1 && executor.currentTarget().imageIndex==2,
       "Nach dem Foto folgt die naechste geplante Position, nicht ein Schritt ab der verfehlten Istposition");
   }
@@ -232,8 +238,8 @@ static void testIncrementalMoveDeadline()
     executor.loadPlan(plan); executor.start(612,0); completeOneImage(executor,hardware,0);
     executor.tick(100); executor.tick(3100); executor.tick(3110);
     hardware.captureStable=false; executor.tick(3111);
-    assertTrue(executor.state()==RUN_FAULT && !hardware.camera && executor.completedImages()==1 &&
-      std::string(executor.lastError())=="EXPOSURE_UNSTABLE","Drift waehrend Timeout-Foto stoppt den Auftrag ohne falsche Bildverbuchung");
+    assertTrue(executor.state()==RUN_PAUSED && !hardware.camera && executor.completedImages()==1 &&
+      std::string(executor.lastError())=="EXPOSURE_UNSTABLE","Drift waehrend Timeout-Foto pausiert den Auftrag ohne falsche Bildverbuchung");
   }
   {
     ReturnTempoHardware hardware; FakeStream stream; V2Controller controller(stream,hardware);
@@ -275,8 +281,8 @@ static void testPassiveExposureDoesNotReconfirmArrival()
   PanoramaExecutor drift(hardware,driftSafety,driftEvents);
   drift.loadPlan(plan); drift.start(614,100); completeMovementAndBeginExposure(drift,hardware,100);
   hardware.stable=false; drift.tick(112);
-  assertTrue(drift.state()==RUN_FAULT && !hardware.camera && driftEvents.images==0,
-    "Echte passive Instabilitaet bleibt ein Belichtungsfehler mit sofortiger Abschaltung");
+  assertTrue(drift.state()==RUN_PAUSED && !hardware.camera && driftEvents.images==0,
+    "Echte passive Instabilitaet pausiert bei sofortiger Abschaltung");
 }
 
 static void testSeparateColumnReturnTempo()
@@ -359,7 +365,10 @@ static void testMovementTimeoutStopsMotion()
   executor.start(250, 0);
   executor.tick(0);
   executor.tick(120000);
-  assertTrue(executor.state() == RUN_FAULT, "Bewegungs-Timeout erzeugt Fehlerzustand");
+  assertTrue(executor.state()==RUN_RUNNING && executor.phase()==PHASE_SELECT_TARGET && hardware.stopped &&
+    !hardware.camera && events.retries==1,"Erster Bewegungs-Timeout stoppt Ausgaenge und wiederholt automatisch");
+  executor.tick(120001);executor.tick(240001);
+  assertTrue(executor.state() == RUN_PAUSED, "Wiederholter Bewegungs-Timeout pausiert mit erhaltenem Auftrag");
   assertTrue(hardware.stopped && !safety.motionEnabled(), "Bewegungs-Timeout schaltet Motoren ab");
   assertTrue(std::string(executor.lastError()) == "MOVEMENT_TIMEOUT", "Bewegungs-Timeout im Status erhalten");
 }
@@ -425,7 +434,9 @@ static void testSettlingRevalidatesTargetAndKeepsMovementTimeout()
   executor.tick(119100);
   assertTrue(executor.phase() == PHASE_SETTLING && !hardware.camera && hardware.stopped && !safety.motionEnabled(), "Drift nach bestaetigtem Halt wartet stromlos auf passive Ruhe");
   executor.tick(120000);
-  assertTrue(executor.state() == RUN_FAULT, "Passive Beruhigung darf die Abbruchgrenze nicht neu starten");
+  assertTrue(executor.state()==RUN_RUNNING,"Passive Beruhigung hat ein eigenes begrenztes Wartebudget");
+  executor.tick(134100);
+  assertTrue(executor.state()==RUN_PAUSED && std::string(executor.lastError())=="CAPTURE_NOT_STABLE","Ausbleibende passive Ruhe pausiert nach Wartebudget ohne erneute Fahrt");
   assertTrue(events.images == 0 && !hardware.camera, "Ohne dauerhaft erreichtes Ziel keine Aufnahme");
 }
 
@@ -1361,10 +1372,11 @@ static void testProfileSettlingUsesOneClockAndProtectsExposure()
   assertTrue(executor.phase()==PHASE_SETTLING && !hardware.camera, "Ruhekandidat startet Beruhigung vor Abschluss der Bestaetigung");
   hardware.reached=true; executor.tick(300); executor.tick(749);
   assertTrue(!hardware.camera, "Gemeinsame Ruhezeit muss vollstaendig verstreichen");
-  executor.tick(750);
-  assertTrue(hardware.camera, "700 ms ab Ruhekandidat genuegen ohne zusaetzliche 250-ms-Wartephase");
-  hardware.reached=false; hardware.candidate=false; executor.tick(751);
-  assertTrue(executor.state()==RUN_FAULT && !hardware.camera && hardware.stopped && events.images==0 &&
+  executor.tick(999);assertTrue(!hardware.camera,"Beruhigung wird nach Abschalten vollstaendig bestaetigt");
+  executor.tick(1000);
+  assertTrue(hardware.camera, "700 ms strenge passive Ruhe nach Abschalten sind vollstaendig bestaetigt");
+  hardware.reached=false; hardware.candidate=false; executor.tick(1001);
+  assertTrue(executor.state()==RUN_PAUSED && !hardware.camera && hardware.stopped && events.images==0 &&
     std::string(executor.lastError())=="EXPOSURE_UNSTABLE", "Positionsverlust nach Ausloesung gilt nicht als gute Aufnahme");
 }
 
@@ -1933,23 +1945,232 @@ static void testWideAngleStepBudget()
   assertTrue(!adapter.applyMotionConfiguration(original,revision+5),"Zeitmodelltest stellt vorherige Konfiguration wieder her");
 }
 
+
+class StrictCaptureHardware : public FakeHardware
+{
+public:
+  bool strict=false;
+  bool exposurePositionStable(int32_t,int32_t) { return strict; }
+};
+
+static void testRobustAcquisition()
+{
+  StrictCaptureHardware h;FakeEvents e;SafetyController safety;
+  PanoramaExecutor x(h,safety,e);auto plan=makePlan(710,2);
+  x.loadPlan(plan);x.start(710,0);x.tick(0);h.reached=true;x.tick(1);x.tick(11);
+  assertTrue(!h.camera && x.phase()==PHASE_SETTLING && x.state()==RUN_RUNNING,
+    "Lose Ruhefreigabe darf keine streng instabile Aufnahme ausloesen");
+  h.strict=true;x.tick(100);x.tick(109);
+  assertTrue(!h.camera,"Strenge Stabilitaet muss fuer die ganze Beruhigungszeit gelten");
+  x.tick(110);assertTrue(h.camera,"Nach voller strenger Ruhe darf genau einmal ausgeloest werden");
+  h.strict=false;x.tick(111);
+  assertTrue(x.state()==RUN_PAUSED && !h.camera && !safety.motionEnabled() && e.images==0 && x.nextImageIndex()==0,
+    "Unstabile Belichtung pausiert mit erhaltenem Auftrag und ungezaehltem Bild");
+  assertTrue(std::string(x.lastError())=="EXPOSURE_UNSTABLE","Pause behaelt konkrete Fehlerursache");
+  assertTrue(std::string(x.resume(710))=="RESUMED" && !h.camera,"Quittiertes Fortsetzen ist ein neuer expliziter Schritt");
+
+  StrictCaptureHardware unsettled;FakeEvents noImages;SafetyController waitSafety;
+  PanoramaExecutor wait(unsettled,waitSafety,noImages);wait.loadPlan(plan);wait.start(710,0);
+  wait.tick(0);unsettled.reached=true;wait.tick(1);wait.tick(15010);
+  assertTrue(wait.state()==RUN_RUNNING && !unsettled.camera,"Zusatzwartezeit endet nicht vor ihrer Grenze");
+  wait.tick(15011);
+  assertTrue(wait.state()==RUN_PAUSED && std::string(wait.lastError())=="CAPTURE_NOT_STABLE" && noImages.images==0,
+    "Dauerhafte Unruhe pausiert ohne Ausloesung nach begrenztem Budget");
+
+  FakeConfigHardware cfg;FakeStream wire;V2Controller c(wire,cfg);c.begin(0);
+  uint16_t seq=2200;uint32_t now=0;
+  auto send=[&](const char *type,const char *fields) {wire.output.clear();wire.feed(frame(++seq,type,fields));c.tick(++now);};
+  send("GET_CAPTURE_STABILITY","");
+  assertTrue(wire.output.find("|CAPTURE_STABILITY_SETTINGS|250|250|400|15000|0|")!=std::string::npos,
+    "Stabilitaetsgrenzen und zusaetzliche Wartezeit koennen ausgelesen werden");
+  MotionSettings before=cfg.settings;
+  send("SET_CAPTURE_STABILITY","300|350|450|20000|0");
+  assertTrue(cfg.revision==1 && cfg.applications==1 && wire.output.find("|STABILITY_SETTINGS_SAVED|")!=std::string::npos,
+    "Alle Stabilitaetswerte werden atomar dauerhaft gespeichert");
+  send("SET_CAPTURE_STABILITY","300|350|450|20000|1");
+  assertTrue(cfg.applications==1,"Identische Werte verschleissen den Speicher nicht");
+  send("SET_CAPTURE_STABILITY","300|350|1600|20000|1");
+  assertTrue(cfg.applications==1 && wire.output.find("|CONFIG_VALUE_RANGE|")!=std::string::npos,
+    "Ein ungueltiger Teilwert verhindert jede Aenderung");
+  send("SET_CAPTURE_STABILITY","250|250|400|15000|0");
+  assertTrue(cfg.applications==1 && wire.output.find("|CONFIG_REVISION|")!=std::string::npos,
+    "Veraltete Revision ueberschreibt keine Benutzerkonfiguration");
+  assertTrue(cfg.settings.values[MP_CAPTURE_PAN_WARNING_DEG]==before.values[MP_CAPTURE_PAN_WARNING_DEG] &&
+    cfg.settings.values[MP_PAN_JOG_START_PWM]==before.values[MP_PAN_JOG_START_PWM],
+    "Speichern veraendert weder Warnschwellen noch Motorleistung");
+  cfg.failStore=true;send("SET_CAPTURE_STABILITY","250|250|400|15000|1");
+  assertTrue(cfg.revision==1 && wire.output.find("|CONFIG_STORE_FAILED|")!=std::string::npos,"Speicherfehler wird nicht als Erfolg bestaetigt");
+  cfg.failStore=false;
+  send("LOAD_PLAN","711|1|0|0|0|2|2|1000|-1000|10|30|50|500|500|0|0");
+  send("SET_CAPTURE_STABILITY","250|250|400|15000|1");
+  assertTrue(cfg.applications==1 && wire.output.find("|CONFIG_BUSY|")!=std::string::npos,"Geladener Auftrag sperrt Konfigurationswechsel");
+  send("START","711");c.tick(++now);c.fault("MOTION_STALLED");
+  assertTrue(wire.output.find("|ACQUISITION_RETRY|711|0|MOTION_STALLED|")!=std::string::npos,
+    "Automatische Wiederholung meldet Lauf, Bildindex und Ursache dauerhaft auswertbar im Ereignisstrom");
+  c.tick(++now);c.fault("MOTION_STALLED");
+  send("GET_STATUS","");assertTrue(wire.output.find("|STATUS|711|PAUSED|")!=std::string::npos,"Behebbarer Anlauffehler erhaelt den Auftrag in Pause");
+  send("SET_CAPTURE_STABILITY","350|350|450|20000|1");
+  assertTrue(cfg.revision==2 && wire.output.find("|STABILITY_SETTINGS_SAVED|")!=std::string::npos,
+    "Quittierbar pausierter Auftrag erlaubt Stabilitaetseinstellung ohne Abbruch");
+  send("BEGIN_MOTION_CONFIG","333|1|2");
+  assertTrue(wire.output.find("|CONFIG_BUSY|")!=std::string::npos,"Vollstaendige Motorparameter bleiben bei geladenem Auftrag gesperrt");
+  int calls=cfg.targetCalls;
+  for(int i=0;i<80;++i) send("RETRY_COLUMN","711|0");
+  assertTrue(cfg.targetCalls==calls && wire.output.find("|COLUMN_RETRY_READY|")!=std::string::npos,
+    "Wiederholte Vorbereitung ohne Bilder verbraucht keine Segmente und startet keine Fahrt");
+  send("RETRY_COLUMN","711|2");
+  assertTrue(wire.output.find("|VALUE_OUT_OF_RANGE|")!=std::string::npos,"Nur aktuelle oder vorherige Spalte waehlbar");
+  send("RESUME","711");c.fault("MOTION_SENSOR");send("GET_STATUS","");
+  assertTrue(wire.output.find("|STATUS|711|FAULT|")!=std::string::npos,"Sensorfehler bleibt harter Schutzfehler");
+
+}
+
+static void testNotQuietAcquisitionRecovery()
+{
+  for(unsigned scenario=0;scenario<4;++scenario) {
+    FakeHardware h;FakeStream wire;V2Controller c(wire,h);c.begin(0);
+    uint32_t now=0;uint16_t sequence=3200;
+    auto send=[&](const char *type,const char *fields) {wire.feed(frame(sequence++,type,fields));c.tick(++now);};
+    send("HELLO","NOT_QUIET_REGRESSION");
+    send("LOAD_PLAN","995|1|0|0|0|1|1|1000|-1000|10|30|50|500|500|0|0");
+    send("START","995");wire.output.clear();
+    c.fault("MOTION_NOT_QUIET");
+    assertTrue(wire.output.find("|ACQUISITION_RETRY|995|0|MOTION_NOT_QUIET|")!=std::string::npos &&
+      h.stopped && !h.camera && !c.motionEnabled(),
+      "Realer V2-Fehlerpfad wiederholt einmal fehlende Ruhe ohne Aufnahme oder globale Auftragsstoerung");
+    if(scenario==0) {
+      c.tick(++now);h.reached=true;
+      for(unsigned i=0;i<30;++i) {now+=20;c.tick(now);}
+      send("GET_STATUS","");
+      assertTrue(wire.output.find("|STATUS|995|COMPLETED|")!=std::string::npos &&
+        wire.output.find("|IMAGE_COMPLETED|")!=std::string::npos && h.targetCalls==2,
+        "Nach erneut bestaetigter Ruhe beendet derselbe unveraenderte Punkt den Auftrag");
+    } else if(scenario==1) {
+      c.tick(++now);c.fault("MOTION_NOT_QUIET");send("GET_STATUS","");
+      assertTrue(wire.output.find("|STATUS|995|PAUSED|")!=std::string::npos && !h.camera && !c.motionEnabled(),
+        "Wiederholt fehlende Ruhe pausiert begrenzt mit erhaltenem Auftrag statt hartem Fehler");
+    } else if(scenario==2) {
+      c.tick(++now);c.fault("MOTION_SENSOR");send("GET_STATUS","");
+      assertTrue(wire.output.find("|STATUS|995|FAULT|")!=std::string::npos && !h.camera && !c.motionEnabled(),
+        "Sensorfehler waehrend einer Ruhe-Wiederholung bleibt sofortiger harter Fehler");
+    } else {
+      int calls=h.targetCalls;c.emergencyStop("USER_STOP");c.tick(++now);send("GET_STATUS","");
+      assertTrue(wire.output.find("|STATUS|995|STOPPED|")!=std::string::npos && h.targetCalls==calls && !h.camera,
+        "Notstop verhindert den vorgemerkten Ruhe-Wiederanlauf");
+    }
+  }
+}
+
+static void testAutomaticRecoveryBoundaries()
+{
+  const char *reasons[]={"MOTION_STALLED","MOTION_FINE_TIMEOUT","MOTION_SETTLE_TIMEOUT","MOVEMENT_TIMEOUT","MOTION_NOT_QUIET"};
+  for(unsigned reason=0;reason<sizeof(reasons)/sizeof(reasons[0]);++reason) {
+    FakeHardware h;FakeEvents e;SafetyController s;PanoramaExecutor x(h,s,e);
+    auto plan=makePlan(991,25);plan.rows=40;plan.stepTiltMdeg=-1000;
+    x.loadPlan(plan);x.start(991,0);uint32_t now=0;
+    for(unsigned index=0;index<1000;++index) {
+      if(index==500) {
+        x.tick(now);
+        assertTrue(x.pauseRecoverable(reasons[reason]) && x.state()==RUN_RUNNING &&
+          x.phase()==PHASE_SELECT_TARGET && h.stopped && !h.camera && !s.motionEnabled(),
+          "1/1000 Bewegungsfehler wiederholt denselben Punkt automatisch bei abgeschalteten Ausgaengen");
+        ++now;
+      }
+      completeOneImage(x,h,now);now+=200;
+      assertTrue(e.indices.back()==index && x.completedImages()==index+1,
+        "Nach einem Einzelproblem bleiben alle 1000 Bildpunkte in richtiger Reihenfolge erhalten");
+    }
+    assertTrue(x.state()==RUN_COMPLETED && e.images==1000 && e.retries==1 && x.planRevision()==0,
+      "1/1000 Fehler verlangt weder RESUME noch Neustart noch einen geaenderten Auftrag");
+  }
+  {
+    FakeHardware h;FakeEvents e;SafetyController s;PanoramaExecutor x(h,s,e);
+    x.loadPlan(makePlan(992,2));x.start(992,0);x.tick(0);x.pauseRecoverable("MOTION_STALLED");
+    x.tick(1);x.pauseRecoverable("MOTION_STALLED");
+    assertTrue(x.state()==RUN_PAUSED && e.retries==1 && h.stopped && !h.camera,
+      "Zweiter Fehler am selben Punkt endet begrenzt mit erhaltenem Auftrag statt Endlosschleife");
+    x.resume(992);x.tick(2);x.pauseRecoverable("MOTION_STALLED");
+    assertTrue(x.state()==RUN_PAUSED && e.retries==1,"RESUME erneuert das Retrybudget am selben Punkt nicht");
+  }
+  for(unsigned action=0;action<3;++action) {
+    FakeHardware h;FakeEvents e;SafetyController s;PanoramaExecutor x(h,s,e);
+    x.loadPlan(makePlan(993,2));x.start(993,0);x.tick(0);
+    if(action==0) x.pause(993);
+    if(action==1) x.rewindColumns(993,1);
+    if(action==2) x.forwardColumns(993,1);
+    x.pauseRecoverable("MOTION_STALLED");
+    assertTrue(x.state()==RUN_PAUSED && e.retries==0 && h.stopped,
+      "Benutzerpause und Spaltennavigation haben Vorrang vor automatischem Wiederanlauf");
+  }
+  {
+    FakeHardware h;FakeEvents e;SafetyController s;PanoramaExecutor x(h,s,e);
+    x.loadPlan(makePlan(994,1));x.start(994,0);x.tick(0);x.pauseRecoverable("MOTION_STALLED");
+    int calls=h.targetCalls;x.emergencyStop("USER_ESTOP");x.tick(1);
+    assertTrue(x.state()==RUN_STOPPED && h.targetCalls==calls && h.stopped && !h.camera,
+      "Notstop vor dem Wiederanlauf verhindert jedes neue Ziel");
+  }
+  {
+    FakeHardware h;FakeStream wire;V2Controller c(wire,h);c.begin(0);c.emergencyStop("TEST");
+    wire.output.clear();wire.feed(frame(2290,"HELLO","EMPTY_PLAN_TEST"));c.tick(1);
+    assertTrue(wire.output.find("|PLAN|")==std::string::npos,
+      "Notgestoppter Kopf ohne Auftrag sendet keinen ungueltigen leeren PLAN");
+  }
+  std::cout<<"Automatic recovery: 5 x 1000 images, 1 injected failure/1000, userResumes=0; boundaries verified"<<std::endl;
+}
+
+static void testAcquisitionRecoveryStress()
+{
+  FakeHardware hardware; FakeEvents events; SafetyController safety;
+  PanoramaExecutor executor(hardware,safety,events);
+  PanoramaPlanV2 plan=makePlan(990,100); plan.rows=40; plan.startTiltMdeg=20000; plan.stepTiltMdeg=-1000;
+  assertTrue(std::string(executor.loadPlan(plan))=="PLAN_ACCEPTED" &&
+    std::string(executor.start(plan.runId,0))=="STARTED","Dauerlauf laedt das volle 4000-Bilder-Raster");
+    uint32_t now=0; unsigned retries=0;
+  for(unsigned index=0;index<4000;++index) {
+    if(index%97==0) {
+      executor.tick(now);
+      assertTrue(executor.pauseRecoverable("MOTION_STALLED") && executor.state()==RUN_RUNNING &&
+        !hardware.camera && hardware.stopped && !safety.motionEnabled() &&
+        executor.plan().runId==990 && executor.completedImages()==index && executor.nextImageIndex()==index,
+        "Einzelner Lastfehler stoppt Ausgaenge, behaelt alle Bilder und wiederholt ohne Benutzerpause");
+      now+=200; ++retries;
+    }
+    completeOneImage(executor,hardware,now); now+=200;
+    assertTrue(executor.completedImages()==index+1 && events.images==static_cast<int>(index+1) && events.indices.back()==index,
+      "Dauerlauf verbucht jeden Rasterpunkt genau einmal und in Reihenfolge, auch nach automatischer Wiederholung");
+  }
+  assertTrue(executor.state()==RUN_COMPLETED && !hardware.camera && events.images==4000,
+    "4000-Bilder-Dauerlauf endet vollstaendig ohne verlorenen Auftrag oder aktive Ausloesung");
+  assertTrue(events.retries==static_cast<int>(retries),"Jede automatische Wiederholung bleibt als Ereignis messbar");
+  std::cout<<"Acquisition stress captures="<<events.images<<" automaticRetries="<<retries<<" userResumes=0 restarts=0"<<std::endl;
+}
+
 int main(int argc,char **argv)
 {
+  if(argc>1 && std::string(argv[1])=="--not-quiet-recovery") { testNotQuietAcquisitionRecovery(); std::cout<<"OK not quiet recovery: "<<tests<<std::endl;return 0; }
   extern int runMotionTests();
+  extern int runWeakDriveRegressions();
+  extern int runLoadedTiltReserveRegressions();
   extern int runMotionConfigTests();
   extern int runPanoramaNavigationRegressions();
   extern int runPanoramaStartRegressions();
   extern int runDownBrakeRegression();
   extern int runPanReturnLoadRegressions();
   extern int runColumnArrivalRegressions();
+  extern int runConcurrentArrivalSafetyRegressions();
   extern int runBufferedPanTraceTests();
   extern int runPanArrivalProgressRegression();
   extern int runPanStopModelRegressions();
+  if(argc>1 && std::string(argv[1])=="--acquisition-robustness") {testRobustAcquisition();std::cout<<"OK acquisition: "<<tests<<std::endl;return 0;}
+  if(argc>1 && std::string(argv[1])=="--acquisition-stress") {testAcquisitionRecoveryStress();testAutomaticRecoveryBoundaries();std::cout<<"OK acquisition stress: "<<tests<<std::endl;return 0;}
+  if(argc>1 && std::string(argv[1])=="--weak-drive") {tests+=runWeakDriveRegressions();std::cout<<"OK weak drive: "<<tests<<std::endl;return 0;}
+  if(argc>1 && std::string(argv[1])=="--tilt-reserve") {tests+=runLoadedTiltReserveRegressions();std::cout<<"OK tilt reserve: "<<tests<<std::endl;return 0;}
   if(argc>1 && std::string(argv[1])=="--wide-tilt") { testWideAngleStepBudget();std::cout<<"OK wide tilt: "<<tests<<std::endl;return 0; }
   if(argc>1 && std::string(argv[1])=="--pan-stop-model") { tests+=runPanStopModelRegressions(); std::cout<<"OK pan model: "<<tests<<std::endl; return 0; }
   if(argc>1 && std::string(argv[1])=="--pan-progress-band") { tests+=runPanArrivalProgressRegression(); std::cout<<"OK pan progress: "<<tests<<std::endl; return 0; }
   if(argc>1 && std::string(argv[1])=="--buffered-trace") { tests+=runBufferedPanTraceTests(); std::cout<<"OK buffered trace: "<<tests<<std::endl; return 0; }
   if(argc>1 && std::string(argv[1])=="--column-arrival") { tests+=runColumnArrivalRegressions(); std::cout<<"OK column arrival: "<<tests<<std::endl; return 0; }
+  if(argc>1 && std::string(argv[1])=="--concurrent-arrival") { tests+=runColumnArrivalRegressions();tests+=runConcurrentArrivalSafetyRegressions();std::cout<<"OK concurrent arrival: "<<tests<<std::endl;return 0; }
   if(argc>1 && std::string(argv[1])=="--pan-return-load") { tests+=runPanReturnLoadRegressions(); std::cout<<"OK pan return load: "<<tests<<std::endl; return 0; }
   if(argc>1 && std::string(argv[1])=="--brake-window") { tests+=runDownBrakeRegression(); std::cout<<"OK brake: "<<tests<<std::endl; return 0; }
   if(argc>1 && std::string(argv[1])=="--run-start") { tests+=runPanoramaStartRegressions(); std::cout<<"OK start: "<<tests<<std::endl; return 0; }
@@ -1962,6 +2183,7 @@ int main(int argc,char **argv)
   tests+=runPanoramaStartRegressions();
   tests+=runPanReturnLoadRegressions();
   tests+=runColumnArrivalRegressions();
+  tests+=runConcurrentArrivalSafetyRegressions();
   tests+=runBufferedPanTraceTests();
   tests+=runPanArrivalProgressRegression();
   tests+=runPanStopModelRegressions();
@@ -1970,6 +2192,10 @@ int main(int argc,char **argv)
   testIncrementalTargetMissRecovery();
   testWideAngleStepBudget();
   testWarningSettingsProtocol();
+  testRobustAcquisition();
+  testAcquisitionRecoveryStress();
+  testAutomaticRecoveryBoundaries();
+  testNotQuietAcquisitionRecovery();
   tests += runMotionConfigTests();
   testManualStatusSurvivesMissingDebugAndRetries();
   testManualStatusInterruptionAndTrigger();
@@ -1979,6 +2205,8 @@ int main(int argc,char **argv)
   testIncrementalMoveDeadline();
   testPassiveExposureDoesNotReconfirmArrival();
   tests += runMotionTests();
+  tests += runWeakDriveRegressions();
+  tests += runLoadedTiltReserveRegressions();
   testBenchProtocolIsolation();
   testDisconnectedEncodersStopRealMotorLoop();
   testBlockedEncoderBusRecovery();

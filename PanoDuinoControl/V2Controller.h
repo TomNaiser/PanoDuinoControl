@@ -36,6 +36,7 @@ public:
   virtual void handleV2Frame(const V2Frame &frame, ProtocolV2 &protocol, uint32_t nowMs);
   virtual void onStateChanged(RunStateV2 state);
   virtual void onPhaseChanged(RunPhaseV2 previousPhase, RunPhaseV2 phase);
+  virtual void onAcquisitionRetry(uint32_t imageIndex, const char *reason);
   virtual void onImageCompleted(const TargetPositionV2 &target, int32_t actualPanMdeg, int32_t actualTiltMdeg,
                                 uint32_t captureSequence, uint16_t planRevision);
 
