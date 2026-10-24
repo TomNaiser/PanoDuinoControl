@@ -30,3 +30,14 @@
 *.exe
 *.out
 *.app
+
+# Arduino deliverables and local helper caches
+*.bin
+*.elf
+*.hex
+*.map
+__pycache__/
+*.py[cod]
+Thumbs.db
+.DS_Store
+/docs/history/README-bis-*.md

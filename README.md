@@ -1,33 +1,37 @@
 # PanoDuinoControl
 
-Stand 23. Oktober 2026: Normale R4-Bluetooth-Firmware **2.4.75** installiert. Eine ruhende Achse außerhalb der Zieltoleranz schaltet nur ihren eigenen Ausgang ab; die andere Achse beendet ihre begrenzte Fahrt vor der Qualitätswarnung. Der zusätzlich real beobachtete Ruhefehler `MOTION_NOT_QUIET` erhält jetzt dieselbe einmalige automatische Wiederholung wie ähnliche Bewegungsfehler; anhaltende Probleme pausieren mit erhaltenem Auftrag. Die strenge Ruheprüfung bleibt unverändert, Sensorfehler und Not-Stop behalten Vorrang. **20.286 Assertions** bestanden. Basislauf und getrennte Prüfung der Korrekturen stehen im [Bericht des Gesamtprojekts](../analysis/2026-10-23-acquisition/ERGEBNIS.md). Eine reale 1/1000-Ausfallrate der neuen Version ist noch nicht nachgewiesen.
+Firmware für einen motorisierten Pan-/Tilt-Panoramakopf mit Encoder-Rückführung und elektrischem Kameraauslöser. Aktueller Quellstand: **2.4.75 / 23. Oktober 2026**, Drahtprotokoll V2. Aktuelles Prüfziel ist der normale **Arduino-Nano-R4-Bluetooth-Build**.
 
-Vorheriger Stand 22. Oktober 2026: Normale R4-Bluetooth-Firmware **2.4.73**. Ein einzelner behebbarer Bewegungsfehler wird ohne Benutzer-RESUME einmal am selben Bildpunkt wiederholt; Zweitfehler pausieren mit erhaltenem Auftrag. ESTOP und Sensor-/Grenzschutz bleiben wirksam. **17.288 Assertions** bestanden, einschließlich 4000 Bildern mit 42 injizierten Stalls und vier weiteren 1000-Bilder-Serien. Dies belegt die Fortsetzungslogik, keine reale 1/1000-Ausfallrate. Reale Messungen und 20-%-Überlappungsbewertung im [Bericht des Gesamtprojekts](../analysis/2026-10-22-robustness/ERGEBNIS.md).
+## Einstieg
 
-Arduino  based control software for an automated pan/tilt platform for Gigapixel Panorama Acquisition
+Aktiver Sketch: [PanoDuinoControl/PanoDuinoControl.ino](PanoDuinoControl/PanoDuinoControl.ino). Die Datei `PanoDuinoControlV181231.ino` im Wurzelverzeichnis ist ein historischer Stand.
 
-Features:
+| Modul | Aufgabe |
+|---|---|
+| `V2Controller` / `ProtocolV2` | Sitzung, Kommandos, CRC/ACK und Gerätemeldungen |
+| `PanoramaExecutor` / `PanoramaPlanV2` | Autonomes Raster-/Bandrezept und Aufnahmephasen |
+| `MotionController` | Pan-/Tiltregelung, Ankunft, passive Stabilität und begrenzte Wiederholung |
+| `SafetyController` | Grenzen, Referenz und begrenzte Motorfreigabe |
+| `MotionSettings` / `MotionConfigStore` | 129 Festkommaparameter, geprüfte Konfiguration und zwei EEPROM-Slots |
 
--wireless communication with PanoramaControl front end
+Kleine Zielverfehlungen werden achsweise behandelt; die andere Achse beendet ihre zulässige Fahrt. Ausgewählte Bewegungsfehler erhalten einen begrenzten Retry, dann eine erhaltene Pause. Sensor-, Grenz- und Not-Stop-Schutz bleiben vorrangig. Eine reale Fehlerquote von höchstens 1/1.000 ist weiterhin nicht nachgewiesen.
 
--PID closed loop position control of  modified RC-Servos (operated via external H-Bridge)
+## Bauen und prüfen
 
--high positional accuracy by using 14-bit rotary encoder data
+```powershell
+pwsh -File Tests/build-r4.ps1
+```
 
--remote triggering of camera shutters 
+Benötigt Arduino CLI, Boardpaket `arduino:renesas_uno` 1.6.0 im konfigurierten Toolordner und die [AS5048B-Sensorbibliothek](https://github.com/sosandroid/AMS_AS5048B). Das Skript prüft zusätzlich Speicherreserve und Boot-Stack. Build und Upload sind getrennt; `Tests/upload-r4.ps1` ist kein hardwarefreier Test.
 
+C++-Hosttests: [Tests/FirmwareExecutorTests/FirmwareExecutorTests.vcxproj](Tests/FirmwareExecutorTests/FirmwareExecutorTests.vcxproj), Visual-C++-Toolset v143. Der dokumentierte 2.4.75-Stand bestand 20.286 Assertions mit FakeArduino/Wire. USB-Control und Trace sind gesonderte Diagnose-Builds und keine automatische Feldfreigabe.
 
-Requirements:  
+## Schnittstellen und Clients
 
--PanoramaControl software (which can also be found in my Github repository: https://github.com/TomNaiser/PanoramaControl)
+- [Gehaltene Fahrt / Jog-Protokoll](PROTOCOL-MANUAL-JOG.md)
+- [Manueller Betriebsstatus](docs/history/MANUAL-STATUS-2026-10-12.md)
+- [Windows-Client](https://github.com/TomNaiser/PanoramaControl)
 
--Arduino Lib for AMS AS5048B I2C - 14-bit magnetic rotary position sensor 
-https://github.com/sosandroid/AMS_AS5048B   (under the BSD license)
+Das Gesamtprojekt bietet eine [englische Übersicht](https://github.com/TomNaiser/PanoramaSoftware/blob/main/README.md), ein [kurzes englisches Manual](https://github.com/TomNaiser/PanoramaSoftware/blob/main/docs/en/manual.md) und das [ausführliche deutsche Handbuch](https://github.com/TomNaiser/PanoramaSoftware/blob/main/docs/README.md). Die Clientarchive sind langfristig; die Firmware besitzt kein vollständiges stromausfallsicheres Capture-Archiv. Kamerapulse beweisen keine gespeicherten Fotos. Lokale Toolchains und Firmware-Binaries gehören nicht in den Quellbaum der Veröffentlichung.
 
-
-
-
-
-
-
-Search tags: arduino gigapixel panorama pan tilt motorized head controller software PID servo encoder
+Lizenz: [LGPL 2.1](LICENSE).
