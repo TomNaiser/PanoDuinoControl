@@ -1228,6 +1228,32 @@ static void testTiltZeroKeepsPhysicalLimitsAndSurvivesReboot()
              "Nullpunkt waehrend einer Fahrt nicht veraenderbar");
 }
 
+static void testTiltSensorReferenceSurvivesSensorReset()
+{
+  extern bool readAxis(uint8_t,double &,double &,double &);
+  Wire.raw[1]=77; Wire.zero[1]=2396;
+  double previous=0, offset=0, actual=0;
+  assertTrue(readAxis(0x40,previous,offset,actual),"Frischer Tiltwinkel mit bisheriger Sensorreferenz lesbar");
+  double horizontal=actual;
+  assertTrue(horizontal>-2 && horizontal<-1,"Referenzfall entspricht dem realen fast horizontalen Kopf");
+  for(uint16_t zero : {uint16_t(0),uint16_t(28),uint16_t(2368),uint16_t(2396)}) {
+    Wire.zero[1]=zero;
+    bool valid=readAxis(0x40,previous,offset,actual);
+    assertTrue(valid && std::abs(actual-horizontal)<0.000001,
+      "Sensor-Reset oder teilweises Nullregister darf waagerechtes Tilt nicht um 52.6 Grad verschieben");
+  }
+  Wire.zero[1]=2396; Wire.zeroAfterAngle=0;
+  double last=actual;
+  assertTrue(!readAxis(0x40,previous,offset,actual) && actual==last,
+    "Referenzwechsel zwischen Winkel und Nullregister verwirft die komplette Probe");
+  assertTrue(readAxis(0x40,previous,offset,actual) && std::abs(actual-horizontal)<0.000001,
+    "Folgeprobe nach Sensor-Reset verwendet wieder dieselbe physische Referenz");
+  Wire.zeroResponseBytes=1;
+  assertTrue(!readAxis(0x40,previous,offset,actual) && actual==last,
+    "Unvollstaendige Sensorreferenz veroeffentlicht keinen scheinbar gueltigen Winkel");
+  Wire.zeroResponseBytes=2; Wire.zero[1]=2396; Wire.raw[1]=16383;
+}
+
 static void testRealAdapterMapsCalibratedTargetsToEncoder()
 {
   extern IPanoramaHardware &testHardwareAdapter();
@@ -2147,6 +2173,7 @@ static void testAcquisitionRecoveryStress()
 
 int main(int argc,char **argv)
 {
+  if(argc>1 && std::string(argv[1])=="--sensor-reference") { testTiltSensorReferenceSurvivesSensorReset();std::cout<<"OK sensor reference: "<<tests<<std::endl;return 0; }
   if(argc>1 && std::string(argv[1])=="--not-quiet-recovery") { testNotQuietAcquisitionRecovery(); std::cout<<"OK not quiet recovery: "<<tests<<std::endl;return 0; }
   extern int runMotionTests();
   extern int runWeakDriveRegressions();
@@ -2209,6 +2236,7 @@ int main(int argc,char **argv)
   tests += runLoadedTiltReserveRegressions();
   testBenchProtocolIsolation();
   testDisconnectedEncodersStopRealMotorLoop();
+  testTiltSensorReferenceSurvivesSensorReset();
   testBlockedEncoderBusRecovery();
   testRealAdapterMapsCalibratedTargetsToEncoder();
   testTiltZeroKeepsPhysicalLimitsAndSurvivesReboot();

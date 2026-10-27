@@ -1,6 +1,8 @@
 # PanoDuinoControl
 
-Firmware für einen motorisierten Pan-/Tilt-Panoramakopf mit Encoder-Rückführung und elektrischem Kameraauslöser. Aktueller Quellstand: **2.4.75 / 23. Oktober 2026**, Drahtprotokoll V2. Aktuelles Prüfziel ist der normale **Arduino-Nano-R4-Bluetooth-Build**.
+Firmware für einen motorisierten Pan-/Tilt-Panoramakopf mit Encoder-Rückführung und elektrischem Kameraauslöser. Aktueller Quellstand: **2.4.76 / 26. Oktober 2026**, Drahtprotokoll V2. Aktuelles Prüfziel ist der normale **Arduino-Nano-R4-Bluetooth-Build**.
+
+**Quellstand und geprüfter Gerätestand:** 2.4.76 enthält den separaten Versuch zur robusten Tilt-Sensorreferenz. Die am 27. Oktober mit Android 0.6.27 und Windows 27.5.4 bestätigte Produktionsreferenz bleibt die reguläre Firmware **2.4.75 mit Motorprofil Revision 40**; 2.4.76 ist dort nicht installiert. [Aktueller Prüfstand und Pan-Korrektur](https://github.com/TomNaiser/PanoramaSoftware/blob/main/docs/validation/2026-10-27-pan-positioning.md).
 
 ## Einstieg
 
@@ -24,7 +26,7 @@ pwsh -File Tests/build-r4.ps1
 
 Benötigt Arduino CLI, Boardpaket `arduino:renesas_uno` 1.6.0 im konfigurierten Toolordner und die [AS5048B-Sensorbibliothek](https://github.com/sosandroid/AMS_AS5048B). Das Skript prüft zusätzlich Speicherreserve und Boot-Stack. Build und Upload sind getrennt; `Tests/upload-r4.ps1` ist kein hardwarefreier Test.
 
-C++-Hosttests: [Tests/FirmwareExecutorTests/FirmwareExecutorTests.vcxproj](Tests/FirmwareExecutorTests/FirmwareExecutorTests.vcxproj), Visual-C++-Toolset v143. Der dokumentierte 2.4.75-Stand bestand 20.286 Assertions mit FakeArduino/Wire. USB-Control und Trace sind gesonderte Diagnose-Builds und keine automatische Feldfreigabe.
+C++-Hosttests: [Tests/FirmwareExecutorTests/FirmwareExecutorTests.vcxproj](Tests/FirmwareExecutorTests/FirmwareExecutorTests.vcxproj), Visual-C++-Toolset v143. Der dokumentierte 2.4.76-Stand bestand 20.295 Assertions mit FakeArduino/Wire. Die [Tilt-Referenzkorrektur](docs/history/TILT-REFERENCE-2.4.76.md) ist zusätzlich mit realem Sensor-Nullregister 0 nach vollständigem Neustart geprüft. USB-Control und Trace sind gesonderte Diagnose-Builds und keine automatische Feldfreigabe.
 
 ## Schnittstellen und Clients
 

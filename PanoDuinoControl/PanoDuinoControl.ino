@@ -32,6 +32,9 @@ extern FspTimer* __get_timer_for_channel(int channel);
 #endif
 
 const uint8_t PanSensorADDRESS = 0x41, TiltSensorADDRESS = 0x40;
+// Preserve the established mechanical reference without relying on a volatile
+// sensor register written only once at Arduino startup.
+static const uint16_t TiltMechanicalZeroCounts = 2396;
 const int pwm_x = 3, pwm_y = 9;
 const int dir_x = 2, dir_x_neg = 4, dir_y = 11, dir_y_neg = 12;
 const int shutterPinLumix1 = 7, shutterPinLumix2 = 8, shutterPinSony = 5, focusPinSony = 6;
@@ -42,6 +45,9 @@ int lastPanDrive = 0, lastTiltDrive = 0;
 #if defined(PANODUINO_MOTION_TRACE) || defined(PANODUINO_HOST_TEST)
 uint8_t encoderReadError[2] = {0,0};
 uint32_t encoderReadFailures[2] = {0,0};
+#endif
+#if defined(ARDUINO_NANO_R4) && defined(PANODUINO_MOTION_TRACE)
+static uint16_t tiltSensorZeroObserved=0xFFFF;
 #endif
 #if defined(ARDUINO_NANO_R4) || defined(PANODUINO_HOST_TEST)
 uint32_t encoderBusRecoveries = 0;
@@ -313,6 +319,16 @@ public:
 #if defined(ARDUINO_NANO_R4) && defined(PANODUINO_MOTION_TRACE)
   void writeMotionTrace(uint32_t nowMs, int appliedPanPwm, int appliedTiltPwm, bool enabled, bool sensorsValid) const
   {
+    // Diagnose the physical reference at rest, including a sensor-only reset.
+    // Do not add serial work to the buffered trace's powered control cycles.
+    static uint16_t emittedZero=0xFFFF;
+    if(!enabled && sensorsValid && tiltSensorZeroObserved<=0x3FFF && emittedZero!=tiltSensorZeroObserved && Serial) {
+      char reference[96];
+      int size=snprintf(reference,sizeof(reference),"[ENCODER_REFERENCE],%lu,%u,%u,%ld\n",
+        (unsigned long)nowMs,(unsigned int)tiltSensorZeroObserved,(unsigned int)TiltMechanicalZeroCounts,(long)actualTiltMdeg());
+      if(size>0 && size<(int)sizeof(reference) && Serial.availableForWrite()>=size &&
+         Serial.write((const uint8_t*)reference,(size_t)size)==(size_t)size) emittedZero=tiltSensorZeroObserved;
+    }
 #if defined(PANODUINO_BUFFERED_PAN_TRACE)
     (void)appliedTiltPwm;
     bufferedPanTrace.sample(nowMs,actualPanMdeg(),(int16_t)appliedPanPwm,enabled,sensorsValid);
@@ -427,12 +443,13 @@ void setup()
 #if defined(ARDUINO_NANO_R4) || defined(PANODUINO_HOST_TEST)
   Wire.setWireTimeout(MOTION_ENCODER_TRANSFER_TIMEOUT_US);
 #endif
-  mysensor_y.zeroRegW(2396); // Retained physical encoder reference; UI zero remains separate.
+  // The sensor's zero is read with each Tilt sample and normalized in software.
+  // Sensor power may start later than USB, or reset without restarting Arduino.
   TotalOffset_x = TotalOffset_y = PreviousPosition_x = PreviousPosition_y = 0;
   v2Controller.begin(millis());
 }
 
-bool readEncoderDegrees(uint8_t address, double &degrees)
+static bool readEncoderRegister(uint8_t address, uint8_t reg, uint16_t &value)
 {
 #if defined(ARDUINO_NANO_R4) || defined(PANODUINO_HOST_TEST)
   uint32_t age=uint32_t(micros()-encoderReadStartUs);
@@ -440,7 +457,7 @@ bool readEncoderDegrees(uint8_t address, double &degrees)
   unsigned int budget=encoderReadBudgetActive ? (unsigned int)(MOTION_ENCODER_RECOVERY_BUDGET_US-age) : MOTION_ENCODER_TRANSFER_TIMEOUT_US;
   Wire.setWireTimeout(budget<MOTION_ENCODER_TRANSFER_TIMEOUT_US ? budget : MOTION_ENCODER_TRANSFER_TIMEOUT_US);
 #endif
-  Wire.beginTransmission(address); Wire.write(0xFE);
+  Wire.beginTransmission(address); Wire.write(reg);
   uint8_t txError = Wire.endTransmission(false);
   if (txError != 0) return encoderReadResult(address,txError);
 #if defined(ARDUINO_NANO_R4) || defined(PANODUINO_HOST_TEST)
@@ -453,7 +470,24 @@ bool readEncoderDegrees(uint8_t address, double &degrees)
   if (count != 2 || Wire.available() != 2) return encoderReadResult(address,10+(uint8_t)count);
   int msb = Wire.read(), lsb = Wire.read();
   if (msb < 0 || lsb < 0) return encoderReadResult(address,20);
-  uint16_t raw = ((uint16_t)msb << 6) | (lsb & 0x3F);
+  value = ((uint16_t)msb << 6) | (lsb & 0x3F);
+  return true;
+}
+
+bool readEncoderDegrees(uint8_t address, double &degrees)
+{
+  uint16_t raw, zeroBefore=0, zeroAfter=0;
+  if(address==TiltSensorADDRESS && !readEncoderRegister(address,0x16,zeroBefore)) return false;
+  if(!readEncoderRegister(address,0xFE,raw)) return false;
+  if(address==TiltSensorADDRESS) {
+    if(!readEncoderRegister(address,0x16,zeroAfter)) return false;
+    // An angle and reference spanning a sensor reset are not one sample.
+    if(zeroBefore!=zeroAfter) return encoderReadResult(address,32);
+    raw=(uint16_t)((uint32_t(raw)+zeroBefore+16384UL-TiltMechanicalZeroCounts)&0x3FFF);
+#if defined(ARDUINO_NANO_R4) && defined(PANODUINO_MOTION_TRACE)
+    tiltSensorZeroObserved=zeroBefore;
+#endif
+  }
   degrees = (16383 - raw) * (360.0 / 16384.0);
   return encoderReadResult(address,isfinite(degrees) ? 0 : 30);
 }

@@ -3,8 +3,8 @@
 
 // Zentral gepflegte Versionsangaben fuer Bluetooth-Diagnose, USB-Debugausgabe
 // und Dokumentation. Das Datum bezeichnet den Stand dieser Firmwarequellen.
-#define PANODUINO_FIRMWARE_VERSION "2.4.75"
-#define PANODUINO_FIRMWARE_DATE "2026-10-23"
+#define PANODUINO_FIRMWARE_VERSION "2.4.76"
+#define PANODUINO_FIRMWARE_DATE "2026-10-26"
 #define PANODUINO_PROTOCOL_VERSION 2
 #if defined(ARDUINO_NANO_R4) && defined(PANODUINO_USB_CONTROL)
 #define PANODUINO_HARDWARE_TARGET "ARDUINO_NANO_R4_USB_TEST"
